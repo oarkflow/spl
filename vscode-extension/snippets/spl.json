@@ -1,0 +1,27 @@
+{
+  "SPL if": {
+    "prefix": "@if",
+    "body": ["@if(${1:condition}) {", "  $0", "}"],
+    "description": "Conditional block"
+  },
+  "SPL for": {
+    "prefix": "@for",
+    "body": ["@for(${1:item} in ${2:items}) {", "  $0", "} @empty {", "  ${3:No items.}", "}"],
+    "description": "Loop with empty branch"
+  },
+  "SPL component": {
+    "prefix": "@component",
+    "body": ["@component(\"${1:Name}\", ${2:prop}) {", "  $0", "}"],
+    "description": "Reusable component definition"
+  },
+  "SPL render": {
+    "prefix": "@render",
+    "body": ["@render(\"${1:Name}\", {${2:key}: ${3:value}}) {", "  $0", "}"],
+    "description": "Render a component"
+  },
+  "SPL signal": {
+    "prefix": "@signal",
+    "body": "@signal(${1:name} = ${2:value})",
+    "description": "Declare a reactive signal"
+  }
+}

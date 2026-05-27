@@ -1,0 +1,76 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "SPL Template",
+  "scopeName": "text.html.spl",
+  "injectionSelector": "L:text.html.basic",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#expression" },
+    { "include": "#directive" },
+    { "include": "#hydrationAttributes" },
+    { "include": "text.html.basic" }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.line.double-slash.spl",
+      "match": "@//.*$"
+    },
+    "expression": {
+      "name": "meta.interpolation.spl",
+      "begin": "\\$\\{",
+      "beginCaptures": {
+        "0": { "name": "punctuation.section.interpolation.begin.spl" }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": { "name": "punctuation.section.interpolation.end.spl" }
+      },
+      "patterns": [
+        { "name": "keyword.control.raw.spl", "match": "\\braw\\b" },
+        { "name": "support.function.filter.spl", "match": "(?<=\\|\\s*)[A-Za-z_][A-Za-z0-9_]*" },
+        { "name": "keyword.operator.spl", "match": "\\|\\||&&|==|!=|<=|>=|[+\\-*/%<>!|]" },
+        { "name": "constant.language.boolean.spl", "match": "\\b(true|false|null|nil)\\b" },
+        { "name": "constant.numeric.spl", "match": "\\b\\d+(?:\\.\\d+)?\\b" },
+        { "include": "#string" },
+        { "name": "variable.other.spl", "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*\\b" }
+      ]
+    },
+    "directive": {
+      "patterns": [
+        {
+          "name": "meta.directive.block.spl",
+          "begin": "(@)(if|elseif|for|switch|match|case|include|import|handler|extends|block|define|component|render|fill|let|computed|watch|signal|bind|effect|reactive|click|lazy)\\b",
+          "beginCaptures": {
+            "1": { "name": "punctuation.definition.directive.spl" },
+            "2": { "name": "keyword.control.directive.spl" }
+          },
+          "end": "(?=\\{|\\}|$|<|@|\\n)",
+          "patterns": [
+            { "include": "#string" },
+            { "name": "keyword.operator.spl", "match": "\\b(in|as|if)\\b|==|!=|<=|>=|[=,]" },
+            { "name": "variable.other.spl", "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*\\b" }
+          ]
+        },
+        {
+          "name": "keyword.control.directive.spl",
+          "match": "@(else|empty|default|slot|raw|stream|defer|fallback)\\b"
+        }
+      ]
+    },
+    "hydrationAttributes": {
+      "patterns": [
+        {
+          "name": "entity.other.attribute-name.spl",
+          "match": "\\bdata-spl-(?:model|bind(?:-[A-Za-z0-9_-]+)?|on-[A-Za-z0-9_-]+|api-[A-Za-z0-9_-]+|if|else|ref|hydration|runtime)\\b"
+        }
+      ]
+    },
+    "string": {
+      "patterns": [
+        { "name": "string.quoted.double.spl", "begin": "\"", "end": "\"", "patterns": [{ "match": "\\\\.", "name": "constant.character.escape.spl" }] },
+        { "name": "string.quoted.single.spl", "begin": "'", "end": "'", "patterns": [{ "match": "\\\\.", "name": "constant.character.escape.spl" }] },
+        { "name": "string.quoted.backtick.spl", "begin": "`", "end": "`", "patterns": [{ "match": "\\\\.", "name": "constant.character.escape.spl" }] }
+      ]
+    }
+  }
+}

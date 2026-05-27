@@ -1,0 +1,93 @@
+{
+  "name": "oarkflow-template-vscode",
+  "displayName": "Oarkflow Template",
+  "description": "Language tooling for Oarkflow SPL template files.",
+  "version": "0.1.6",
+  "publisher": "oarkflow",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Snippets"
+  ],
+  "main": "./src/extension.js",
+  "activationEvents": [
+    "onLanguage:spl-template",
+    "onLanguage:html",
+    "workspaceContains:**/*.spl.html",
+    "workspaceContains:**/*.tmpl"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "spl-template",
+        "aliases": [
+          "SPL Template",
+          "spl-template"
+        ],
+        "extensions": [
+          ".spl",
+          ".spl.html",
+          ".tmpl"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "spl-template",
+        "scopeName": "text.html.spl",
+        "path": "./syntaxes/spl.tmLanguage.json",
+        "embeddedLanguages": {
+          "meta.embedded.block.html": "html"
+        }
+      },
+      {
+        "scopeName": "spl.injection",
+        "path": "./syntaxes/spl.injection.tmLanguage.json",
+        "injectTo": [
+          "text.html.basic"
+        ],
+        "embeddedLanguages": {
+          "meta.embedded.block.html": "html"
+        }
+      }
+    ],
+    "snippets": [
+      {
+        "language": "spl-template",
+        "path": "./snippets/spl.json"
+      },
+      {
+        "language": "html",
+        "path": "./snippets/spl.json"
+      }
+    ],
+    "configuration": {
+      "title": "Oarkflow Template",
+      "properties": {
+        "oarkflowTemplate.enableHtmlFiles": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable SPL completion, hover, diagnostics, and definition support in HTML files."
+        },
+        "oarkflowTemplate.maxDiagnostics": {
+          "type": "number",
+          "default": 200,
+          "minimum": 10,
+          "description": "Maximum SPL diagnostics reported per document."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "oarkflowTemplate.showStatus",
+        "title": "Oarkflow Template: Show Status"
+      }
+    ]
+  },
+  "scripts": {
+    "check": "node --check src/extension.js && node --check server/server.js"
+  }
+}
