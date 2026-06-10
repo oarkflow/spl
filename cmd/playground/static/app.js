@@ -187,7 +187,7 @@ function renderExamples(filter = '') {
   const query = filter.trim().toLowerCase();
 
   const filtered = templateExamples.filter((ex) =>
-    ((ex.label || ex.name || '') + ' ' + (ex.category || '') + ' ' + (ex.tags || []).join(' ')).toLowerCase().includes(query)
+    ((ex.label || ex.name || '') + ' ' + (ex.description || '') + ' ' + (ex.category || '') + ' ' + (ex.tags || []).join(' ')).toLowerCase().includes(query)
   );
   let currentCategory = '';
   for (const ex of filtered) {
@@ -205,7 +205,10 @@ function renderExamples(filter = '') {
     const tags = Array.isArray(ex.tags) && ex.tags.length
       ? `<div class="mt-1 flex flex-wrap gap-1">${ex.tags.map((tag) => `<span class="inline-flex items-center rounded-full bg-slate-200 dark:bg-slate-800 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-600 dark:text-slate-300">${escapeHTML(tag)}</span>`).join('')}</div>`
       : '';
-    btn.innerHTML = `<span class="font-medium">${escapeHTML(ex.label || ex.name)}</span>${tags}`;
+    const description = ex.description
+      ? `<div class="mt-0.5 text-xs leading-snug text-slate-500 dark:text-slate-400">${escapeHTML(ex.description)}</div>`
+      : '';
+    btn.innerHTML = `<span class="font-medium">${escapeHTML(ex.label || ex.name)}</span>${description}${tags}`;
     btn.addEventListener('click', () => {
       setTemplateValue(ex.template || '');
       try {

@@ -145,6 +145,520 @@ func builtinExamples() []map[string]any {
 			"data":     `{"items": [{"name": "Laptop", "category": "electronics", "price": 999, "onSale": false}, {"name": "Phone", "category": "electronics", "price": 699, "onSale": true}, {"name": "Tablet", "category": "electronics", "price": 499, "onSale": false}, {"name": "Desk", "category": "furniture", "price": 299, "onSale": true}, {"name": "Chair", "category": "furniture", "price": 199, "onSale": false}, {"name": "Novel", "category": "books", "price": 15, "onSale": true}, {"name": "Textbook", "category": "books", "price": 89, "onSale": false}]}`,
 		},
 		{
+			"name":        "ops-dashboard",
+			"label":       "Ops Dashboard",
+			"category":    "Practical Patterns",
+			"description": "A dense status dashboard with reusable metric cards, incident states, and formatted values.",
+			"tags":        []string{"dashboard", "components", "status"},
+			"template": `<style>
+.dashboard { font-family: Inter, ui-sans-serif, system-ui, sans-serif; max-width: 76rem; margin: 1rem auto; color: #172033; }
+.topbar { display: flex; justify-content: space-between; gap: 1rem; align-items: flex-start; padding-bottom: 1rem; border-bottom: 1px solid #d7dde8; }
+.eyebrow { margin: 0; font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.08em; color: #476179; font-weight: 700; }
+.title { margin: 0.25rem 0 0; font-size: 1.8rem; line-height: 1.1; }
+.meta { margin: 0.35rem 0 0; color: #58677a; }
+.badge { display: inline-flex; align-items: center; border-radius: 999px; padding: 0.35rem 0.7rem; font-size: 0.78rem; font-weight: 700; }
+.badge-ok { color: #075985; background: #e0f2fe; }
+.badge-risk { color: #9a3412; background: #ffedd5; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: 0.8rem; margin-top: 1rem; }
+.metric { border: 1px solid #d7dde8; border-radius: 8px; padding: 0.9rem; background: #ffffff; }
+.metric-label { color: #58677a; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; }
+.metric-value { margin-top: 0.35rem; font-size: 1.65rem; font-weight: 800; }
+.metric-note { margin-top: 0.25rem; color: #58677a; font-size: 0.86rem; }
+.two-col { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(18rem, 0.7fr); gap: 1rem; margin-top: 1rem; }
+.panel { border: 1px solid #d7dde8; border-radius: 8px; background: white; overflow: hidden; }
+.panel h2 { margin: 0; padding: 0.85rem 1rem; border-bottom: 1px solid #d7dde8; font-size: 1rem; }
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: 0.7rem 1rem; border-bottom: 1px solid #edf0f5; text-align: left; font-size: 0.9rem; }
+th { color: #58677a; font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.06em; }
+.severity-critical { color: #991b1b; background: #fee2e2; }
+.severity-warning { color: #92400e; background: #fef3c7; }
+.severity-info { color: #075985; background: #e0f2fe; }
+.service-row { display: flex; justify-content: space-between; gap: 1rem; padding: 0.75rem 1rem; border-bottom: 1px solid #edf0f5; }
+.service-name { font-weight: 700; }
+.service-meta { color: #58677a; font-size: 0.84rem; }
+@media (max-width: 820px) { .two-col { grid-template-columns: 1fr; } .topbar { flex-direction: column; } }
+</style>
+@component("MetricCard", label, value, note) {
+  <article class="metric">
+    <div class="metric-label">${label}</div>
+    <div class="metric-value">${value}</div>
+    <div class="metric-note">${note}</div>
+  </article>
+}
+
+<main class="dashboard">
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">${environment | upper} environment</p>
+      <h1 class="title">${product} operations</h1>
+      <p class="meta">Updated ${updatedAt} by ${owner}. ${summary}</p>
+    </div>
+    @if(openIncidentCount) {
+      <span class="badge badge-risk">${openIncidentCount} active incident(s)</span>
+    } @else {
+      <span class="badge badge-ok">All clear</span>
+    }
+  </header>
+
+  <section class="grid">
+    @for(metric in metrics) {
+      @render("MetricCard", {"label": metric.label, "value": metric.value, "note": metric.note})
+    }
+  </section>
+
+  <section class="two-col">
+    <article class="panel">
+      <h2>Incident Queue</h2>
+      <table>
+        <thead><tr><th>Incident</th><th>Severity</th><th>Owner</th><th>Age</th></tr></thead>
+        <tbody>
+          @for(incident in incidents) {
+            <tr>
+              <td>${incident.title}</td>
+              <td><span class="badge severity-${incident.severity}">${incident.severity | title}</span></td>
+              <td>${incident.owner | default "Unassigned"}</td>
+              <td>${incident.age}</td>
+            </tr>
+          } @empty {
+            <tr><td colspan="4">No active incidents.</td></tr>
+          }
+        </tbody>
+      </table>
+    </article>
+
+    <aside class="panel">
+      <h2>Service Health</h2>
+      @for(service in services) {
+        <div class="service-row">
+          <div>
+            <div class="service-name">${service.name}</div>
+            <div class="service-meta">${service.region} / p95 ${service.p95}</div>
+          </div>
+          @switch(service.status) {
+            @case("healthy") { <span class="badge badge-ok">Healthy</span> }
+            @case("degraded") { <span class="badge badge-risk">Degraded</span> }
+            @default { <span class="badge severity-info">${service.status | title}</span> }
+          }
+        </div>
+      }
+    </aside>
+  </section>
+</main>`,
+			"data": `{"product":"Atlas API","environment":"production","updatedAt":"10:42 UTC","owner":"platform-oncall","summary":"Traffic is steady after the EU cache deploy.","openIncidentCount":2,"metrics":[{"label":"Requests","value":"18.4M","note":"+6.2% vs yesterday"},{"label":"Error rate","value":"0.08%","note":"Below 0.20% SLO"},{"label":"p95 latency","value":"142 ms","note":"12 ms faster than baseline"},{"label":"Queue depth","value":"37","note":"Autoscaling stable"}],"incidents":[{"title":"EU image cache miss spike","severity":"warning","owner":"Mina","age":"21m"},{"title":"Delayed webhook retries","severity":"critical","owner":"Ravi","age":"8m"},{"title":"Search index lag","severity":"info","owner":"","age":"4m"}],"services":[{"name":"API gateway","region":"us-east","p95":"81 ms","status":"healthy"},{"name":"Worker pool","region":"us-east","p95":"233 ms","status":"healthy"},{"name":"Media cache","region":"eu-west","p95":"491 ms","status":"degraded"},{"name":"Search","region":"global","p95":"190 ms","status":"watching"}]}`,
+		},
+		{
+			"name":        "invoice",
+			"label":       "Invoice",
+			"category":    "Practical Patterns",
+			"description": "A printable billing document with line totals, discounts, tax, and payment state.",
+			"tags":        []string{"invoice", "tables", "formatting"},
+			"template": `<style>
+.invoice { font-family: ui-sans-serif, system-ui, sans-serif; max-width: 58rem; margin: 1rem auto; color: #1f2937; }
+.invoice-header { display: flex; justify-content: space-between; gap: 1rem; padding-bottom: 1.25rem; border-bottom: 2px solid #111827; }
+.brand { font-size: 1.65rem; font-weight: 800; }
+.muted { color: #6b7280; }
+.right { text-align: right; }
+.box-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin: 1.25rem 0; }
+.box { border: 1px solid #d1d5db; border-radius: 8px; padding: 0.9rem; }
+.label { color: #6b7280; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; }
+table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+th, td { padding: 0.75rem; border-bottom: 1px solid #e5e7eb; vertical-align: top; }
+th { text-align: left; color: #6b7280; font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.06em; }
+.num { text-align: right; white-space: nowrap; }
+.totals { margin-left: auto; margin-top: 1rem; width: min(100%, 22rem); }
+.total-row { display: flex; justify-content: space-between; padding: 0.55rem 0; border-bottom: 1px solid #e5e7eb; }
+.grand { font-size: 1.2rem; font-weight: 800; border-bottom: 2px solid #111827; }
+.status-paid { color: #166534; background: #dcfce7; }
+.status-due { color: #991b1b; background: #fee2e2; }
+.pill { display: inline-flex; border-radius: 999px; padding: 0.35rem 0.7rem; font-weight: 700; font-size: 0.8rem; }
+.notes { margin-top: 1.5rem; padding: 0.9rem; background: #f9fafb; border-radius: 8px; color: #4b5563; }
+@media (max-width: 680px) { .invoice-header, .box-grid { grid-template-columns: 1fr; display: grid; } .right { text-align: left; } }
+</style>
+<main class="invoice">
+  <header class="invoice-header">
+    <div>
+      <div class="brand">${seller.name}</div>
+      <div class="muted">${seller.address}</div>
+      <div class="muted">${seller.email}</div>
+    </div>
+    <div class="right">
+      <h1>Invoice ${invoice.number}</h1>
+      @switch(invoice.status) {
+        @case("paid") { <span class="pill status-paid">Paid</span> }
+        @default { <span class="pill status-due">Payment Due</span> }
+      }
+    </div>
+  </header>
+
+  <section class="box-grid">
+    <div class="box">
+      <div class="label">Bill To</div>
+      <strong>${client.name}</strong><br />
+      ${client.company}<br />
+      <span class="muted">${client.email}</span>
+    </div>
+    <div class="box">
+      <div class="label">Schedule</div>
+      Issued: <strong>${invoice.issued}</strong><br />
+      Due: <strong>${invoice.due}</strong><br />
+      Terms: <strong>${invoice.terms}</strong>
+    </div>
+  </section>
+
+  <table>
+    <thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Total</th></tr></thead>
+    <tbody>
+      @for(line in lines) {
+        <tr>
+          <td><strong>${line.name}</strong><br /><span class="muted">${line.detail}</span></td>
+          <td class="num">${line.qty}</td>
+          <td class="num">$${line.rate | format "%.2f"}</td>
+          <td class="num">$${line.total | format "%.2f"}</td>
+        </tr>
+      }
+    </tbody>
+  </table>
+
+  <section class="totals">
+    <div class="total-row"><span>Subtotal</span><strong>$${totals.subtotal | format "%.2f"}</strong></div>
+    @if(totals.discount) {
+      <div class="total-row"><span>Discount</span><strong>-$${totals.discount | format "%.2f"}</strong></div>
+    }
+    <div class="total-row"><span>Tax</span><strong>$${totals.tax | format "%.2f"}</strong></div>
+    <div class="total-row grand"><span>Total</span><span>$${totals.total | format "%.2f"}</span></div>
+  </section>
+
+  <div class="notes">${notes}</div>
+</main>`,
+			"data": `{"seller":{"name":"Northstar Studio","address":"18 Market Street, Portland, OR","email":"billing@northstar.example"},"client":{"name":"Priya Sharma","company":"Luma Commerce","email":"priya@luma.example"},"invoice":{"number":"INV-2048","issued":"2026-06-01","due":"2026-06-15","terms":"Net 14","status":"due"},"lines":[{"name":"Design system audit","detail":"Component inventory and accessibility review","qty":1,"rate":1800,"total":1800},{"name":"Template integration","detail":"SPL layout, card, and notification templates","qty":12,"rate":145,"total":1740},{"name":"Implementation support","detail":"Async review and launch fixes","qty":6,"rate":125,"total":750}],"totals":{"subtotal":4290,"discount":300,"tax":319.2,"total":4309.2},"notes":"Please include the invoice number with payment. Thank you for the thoughtful collaboration."}`,
+		},
+		{
+			"name":        "form-errors",
+			"label":       "Form Errors",
+			"category":    "Practical Patterns",
+			"description": "A reactive validation form with bound controls, inline errors, summary state, and reset/submit handling.",
+			"tags":        []string{"forms", "validation", "errors", "reactive"},
+			"template": `<style>
+.form-page { font-family: ui-sans-serif, system-ui, sans-serif; max-width: 48rem; margin: 1rem auto; color: #172033; }
+.summary { border: 1px solid #fecaca; background: #fff1f2; color: #991b1b; border-radius: 8px; padding: 0.85rem 1rem; margin-bottom: 1rem; }
+.success { border: 1px solid #bbf7d0; background: #f0fdf4; color: #166534; border-radius: 8px; padding: 0.85rem 1rem; margin-bottom: 1rem; }
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.9rem; }
+.field { display: grid; gap: 0.35rem; }
+label { font-weight: 700; font-size: 0.9rem; }
+input, select, textarea { width: 100%; box-sizing: border-box; border: 1px solid #cbd5e1; border-radius: 8px; padding: 0.7rem 0.8rem; font: inherit; }
+.invalid { border-color: #ef4444; background: #fff7f7; }
+.error { color: #b91c1c; font-size: 0.84rem; }
+.full { grid-column: 1 / -1; }
+.check { display: flex; gap: 0.5rem; align-items: flex-start; margin-top: 0.25rem; }
+.check input { width: auto; margin-top: 0.25rem; }
+.preview { margin-top: 1rem; padding: 0.85rem 1rem; border-radius: 8px; border: 1px solid #dbeafe; background: #f8fafc; }
+.preview pre { margin: 0.65rem 0 0; white-space: pre-wrap; font-size: 0.82rem; color: #334155; }
+.actions { display: flex; gap: 0.65rem; margin-top: 1rem; align-items: center; }
+.primary { border: 0; border-radius: 8px; padding: 0.75rem 1rem; color: white; background: #0f766e; font-weight: 800; cursor: pointer; }
+.secondary { border: 1px solid #cbd5e1; border-radius: 8px; padding: 0.75rem 1rem; color: #334155; background: white; font-weight: 700; cursor: pointer; }
+.ghost { color: #475569; }
+@media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
+</style>
+@let(planOptions = [{"value": "", "label": "Select a plan"}, {"value": "starter", "label": "Starter"}, {"value": "growth", "label": "Growth"}, {"value": "enterprise", "label": "Enterprise"}])
+@signal(formValues = {"name": "Jordan Lee", "email": "jordan@gmail.com", "plan": "", "teamSize": "about ten", "goals": "Migrate customer notification templates and preview them before launch.", "accepted": false})
+@signal(formErrors = {"name": "", "email": "Use a company email address.", "plan": "Choose a plan.", "teamSize": "Enter a numeric team size.", "goals": "", "accepted": "Accept the terms to continue."})
+@signal(fieldClasses = {"name": "", "email": "invalid", "plan": "invalid", "teamSize": "invalid", "goals": "", "accepted": "invalid"})
+@signal(errorSummary = ["Email must be a work address.", "Plan is required for routing.", "Team size must be a number.", "You must accept the terms."])
+@signal(errorCount = 4)
+@signal(submitted = false)
+@signal(statusMessage = "Edit any field to revalidate immediately.")
+
+@handler(validateForm) {
+  var values = signal('formValues') || {};
+  var errors = {name: '', email: '', plan: '', teamSize: '', goals: '', accepted: ''};
+  var classes = {name: '', email: '', plan: '', teamSize: '', goals: '', accepted: ''};
+  var summary = [];
+  var name = (values.name || '').trim();
+  var email = (values.email || '').trim();
+  var teamSizeText = (values.teamSize || '').trim();
+  var goals = (values.goals || '').trim();
+  var teamSize = Number(teamSizeText);
+
+  if (name.length < 2) {
+    errors.name = 'Enter at least 2 characters.';
+    classes.name = 'invalid';
+    summary.push('Name is too short.');
+  }
+  if (!email || email.indexOf('@') < 1 || email.indexOf('.') < 3 || email.endsWith('@gmail.com')) {
+    errors.email = 'Use a valid company email address.';
+    classes.email = 'invalid';
+    summary.push('Email must be a work address.');
+  }
+  if (!values.plan) {
+    errors.plan = 'Choose a plan.';
+    classes.plan = 'invalid';
+    summary.push('Plan is required for routing.');
+  }
+  if (!teamSizeText || !Number.isFinite(teamSize) || teamSize < 1) {
+    errors.teamSize = 'Enter a numeric team size of 1 or more.';
+    classes.teamSize = 'invalid';
+    summary.push('Team size must be a positive number.');
+  }
+  if (goals.length < 20) {
+    errors.goals = 'Describe the goal in at least 20 characters.';
+    classes.goals = 'invalid';
+    summary.push('Implementation goals need more detail.');
+  }
+  if (!values.accepted) {
+    errors.accepted = 'Accept the terms to continue.';
+    classes.accepted = 'invalid';
+    summary.push('You must accept the terms.');
+  }
+
+  setSignal(formErrors, errors);
+  setSignal(fieldClasses, classes);
+  setSignal(errorSummary, summary);
+  setSignal(errorCount, summary.length);
+  setSignal(submitted, false);
+  setSignal(statusMessage, summary.length ? 'Fix the highlighted fields to submit.' : 'All controls are valid and reactive.');
+  return summary.length === 0;
+}
+
+@handler(submitReactiveForm) {
+  var ok = validateForm();
+  setSignal(submitted, ok);
+  if (ok) {
+    var values = signal('formValues') || {};
+    setSignal(statusMessage, 'Submitted request for ' + (values.name || 'the requester') + '.');
+  }
+}
+
+@handler(resetReactiveForm) {
+  setSignal(formValues, {name: '', email: '', plan: '', teamSize: '', goals: '', accepted: false});
+  setSignal(submitted, false);
+  validateForm();
+}
+
+<main class="form-page">
+  <h1>Reactive Implementation Request</h1>
+  @reactive(formValues, formErrors, fieldClasses, errorSummary, errorCount, submitted, statusMessage) {
+    @if(submitted) {
+      <section class="success">
+        <strong>Request accepted.</strong> ${statusMessage}
+      </section>
+    } @elseif(errorCount) {
+      <section class="summary">
+        <strong>${errorCount} field(s) need attention.</strong>
+        <ul>
+          @for(message in errorSummary) {
+            <li>${message}</li>
+          }
+        </ul>
+      </section>
+    } @else {
+      <section class="success">
+        <strong>Ready to submit.</strong> ${statusMessage}
+      </section>
+    }
+
+    <form>
+      <section class="grid">
+        <div class="field">
+          <label for="name">Full name</label>
+          <input id="name" name="name" data-spl-model="formValues.name" on:input="validateForm" class="${fieldClasses.name}" />
+          @if(formErrors.name) { <div class="error">${formErrors.name}</div> }
+        </div>
+        <div class="field">
+          <label for="email">Email</label>
+          <input id="email" name="email" type="email" data-spl-model="formValues.email" on:input="validateForm" class="${fieldClasses.email}" />
+          @if(formErrors.email) { <div class="error">${formErrors.email}</div> }
+        </div>
+        <div class="field">
+          <label for="plan">Plan</label>
+          <select id="plan" name="plan" data-spl-model="formValues.plan" on:input="validateForm" on:change="validateForm" class="${fieldClasses.plan}">
+            @for(plan in planOptions) {
+              <option value="${plan.value}">${plan.label}</option>
+            }
+          </select>
+          @if(formErrors.plan) { <div class="error">${formErrors.plan}</div> }
+        </div>
+        <div class="field">
+          <label for="teamSize">Team size</label>
+          <input id="teamSize" name="teamSize" inputmode="numeric" data-spl-model="formValues.teamSize" on:input="validateForm" class="${fieldClasses.teamSize}" />
+          @if(formErrors.teamSize) { <div class="error">${formErrors.teamSize}</div> }
+        </div>
+        <div class="field full">
+          <label for="goals">Implementation goals</label>
+          <textarea id="goals" name="goals" rows="4" data-spl-model="formValues.goals" on:input="validateForm" class="${fieldClasses.goals}"></textarea>
+          @if(formErrors.goals) { <div class="error">${formErrors.goals}</div> }
+        </div>
+        <label class="check full">
+          <input type="checkbox" name="accepted" data-spl-model="formValues.accepted" on:change="validateForm" />
+          <span>I agree to the data processing terms.</span>
+        </label>
+        @if(formErrors.accepted) { <div class="error full">${formErrors.accepted}</div> }
+      </section>
+
+      <div class="actions">
+        <button class="primary" type="button" on:click="submitReactiveForm">Submit Request</button>
+        <button class="secondary" type="button" on:click="resetReactiveForm">Reset</button>
+        <span class="ghost">${statusMessage}</span>
+      </div>
+
+      <section class="preview">
+        <strong>Live form signal</strong>
+        <pre>${formValues}</pre>
+      </section>
+    </form>
+  }
+</main>`,
+			"data": `{}`,
+		},
+		{
+			"name":        "role-navigation",
+			"label":       "Role-Based Navigation",
+			"category":    "Practical Patterns",
+			"description": "Menu rendering for account permissions, disabled states, and upgrade prompts.",
+			"tags":        []string{"navigation", "permissions", "switch"},
+			"template": `<style>
+.shell { font-family: ui-sans-serif, system-ui, sans-serif; max-width: 60rem; margin: 1rem auto; display: grid; grid-template-columns: 16rem 1fr; gap: 1rem; color: #1f2937; }
+.sidebar { border: 1px solid #d1d5db; border-radius: 8px; overflow: hidden; background: white; }
+.profile { padding: 1rem; border-bottom: 1px solid #e5e7eb; }
+.profile strong { display: block; }
+.role { color: #4f46e5; font-weight: 700; font-size: 0.85rem; }
+.nav-item { display: flex; justify-content: space-between; gap: 0.75rem; padding: 0.75rem 1rem; border-bottom: 1px solid #f3f4f6; text-decoration: none; color: #1f2937; }
+.nav-item:hover { background: #f9fafb; }
+.disabled { color: #9ca3af; background: #f9fafb; }
+.pill { border-radius: 999px; padding: 0.18rem 0.5rem; font-size: 0.72rem; font-weight: 800; }
+.allowed { background: #dcfce7; color: #166534; }
+.blocked { background: #fee2e2; color: #991b1b; }
+.content { border: 1px solid #d1d5db; border-radius: 8px; padding: 1rem; background: white; }
+.banner { padding: 0.8rem 0.9rem; border-radius: 8px; background: #eff6ff; color: #1e40af; margin-bottom: 1rem; }
+.feature-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: 0.75rem; }
+.feature { border: 1px solid #e5e7eb; border-radius: 8px; padding: 0.85rem; }
+@media (max-width: 760px) { .shell { grid-template-columns: 1fr; } }
+</style>
+<main class="shell">
+  <aside class="sidebar">
+    <div class="profile">
+      <strong>${user.name}</strong>
+      <span class="role">${user.role | title}</span><br />
+      <span>${account.plan | title} plan</span>
+    </div>
+    @for(item in navigation) {
+      @if(item.allowed) {
+        <a class="nav-item" href="${item.href}">
+          <span>${item.label}</span>
+          <span class="pill allowed">Open</span>
+        </a>
+      } @else {
+        <div class="nav-item disabled">
+          <span>${item.label}</span>
+          <span class="pill blocked">${item.reason}</span>
+        </div>
+      }
+    }
+  </aside>
+
+  <section class="content">
+    @switch(account.plan) {
+      @case("enterprise") {
+        <div class="banner">Enterprise controls are enabled for ${account.name}.</div>
+      }
+      @case("growth") {
+        <div class="banner">Growth plan active. Upgrade to unlock audit exports and SSO policy controls.</div>
+      }
+      @default {
+        <div class="banner">Starter plan active. Upgrade when you need team governance.</div>
+      }
+    }
+
+    <h1>${pageTitle}</h1>
+    <p>${intro}</p>
+    <div class="feature-grid">
+      @for(feature in features) {
+        <article class="feature">
+          <strong>${feature.name}</strong>
+          <p>${feature.description}</p>
+          @if(feature.enabled) {
+            <span class="pill allowed">Enabled</span>
+          } @else {
+            <span class="pill blocked">Locked</span>
+          }
+        </article>
+      }
+    </div>
+  </section>
+</main>`,
+			"data": `{"user":{"name":"Sam Rivera","role":"admin"},"account":{"name":"Acme Labs","plan":"growth"},"pageTitle":"Workspace Settings","intro":"This view is generated from permission-aware navigation and feature flags.","navigation":[{"label":"Overview","href":"#overview","allowed":true,"reason":""},{"label":"Members","href":"#members","allowed":true,"reason":""},{"label":"Billing","href":"#billing","allowed":true,"reason":""},{"label":"Audit log","href":"#audit","allowed":false,"reason":"Upgrade"},{"label":"SSO policy","href":"#sso","allowed":false,"reason":"Enterprise"}],"features":[{"name":"Seat management","description":"Invite, suspend, and group workspace members.","enabled":true},{"name":"Usage alerts","description":"Notify owners before monthly budgets are exceeded.","enabled":true},{"name":"Audit exports","description":"Export signed compliance trails for external review.","enabled":false},{"name":"SAML SSO","description":"Centralize authentication with identity provider rules.","enabled":false}]}`,
+		},
+		{
+			"name":        "release-notes",
+			"label":       "Release Notes",
+			"category":    "Practical Patterns",
+			"description": "A changelog page with grouped changes, badges, breaking-change callouts, and fallbacks.",
+			"tags":        []string{"changelog", "release", "grouping"},
+			"template": `<style>
+.release { font-family: ui-sans-serif, system-ui, sans-serif; max-width: 58rem; margin: 1rem auto; color: #1e293b; }
+.hero { border-bottom: 1px solid #cbd5e1; padding-bottom: 1rem; }
+.hero h1 { margin-bottom: 0.25rem; }
+.muted { color: #64748b; }
+.version { margin-top: 1rem; border: 1px solid #cbd5e1; border-radius: 8px; overflow: hidden; }
+.version-header { display: flex; justify-content: space-between; gap: 1rem; padding: 0.85rem 1rem; background: #f8fafc; border-bottom: 1px solid #cbd5e1; }
+.change { padding: 0.85rem 1rem; border-bottom: 1px solid #e2e8f0; }
+.change:last-child { border-bottom: 0; }
+.kind { display: inline-flex; padding: 0.2rem 0.5rem; border-radius: 999px; font-size: 0.72rem; font-weight: 800; margin-right: 0.4rem; }
+.kind-feature { background: #dcfce7; color: #166534; }
+.kind-fix { background: #dbeafe; color: #1d4ed8; }
+.kind-docs { background: #fef3c7; color: #92400e; }
+.kind-breaking { background: #fee2e2; color: #991b1b; }
+.breaking { margin-top: 0.6rem; padding: 0.65rem 0.75rem; border-radius: 8px; background: #fff1f2; color: #991b1b; }
+.tag-list { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.55rem; }
+.tag { color: #475569; background: #e2e8f0; border-radius: 999px; padding: 0.18rem 0.45rem; font-size: 0.72rem; }
+</style>
+<main class="release">
+  <header class="hero">
+    <p class="muted">${project} release notes</p>
+    <h1>${latest.version} is ready</h1>
+    <p>${latest.summary}</p>
+  </header>
+
+  @for(version in versions) {
+    <section class="version">
+      <div class="version-header">
+        <div>
+          <strong>${version.version}</strong>
+          <div class="muted">${version.date} by ${version.owner}</div>
+        </div>
+        @if(version.breaking) {
+          <span class="kind kind-breaking">Breaking</span>
+        } @else {
+          <span class="kind kind-feature">Compatible</span>
+        }
+      </div>
+
+      @for(change in version.changes) {
+        <article class="change">
+          <div>
+            <span class="kind kind-${change.kind}">${change.kind | title}</span>
+            <strong>${change.title}</strong>
+          </div>
+          <p>${change.body}</p>
+          @if(change.breakingNote) {
+            <div class="breaking">${change.breakingNote}</div>
+          }
+          <div class="tag-list">
+            @for(tag in change.tags) {
+              <span class="tag">${tag}</span>
+            } @empty {
+              <span class="tag">general</span>
+            }
+          </div>
+        </article>
+      } @empty {
+        <article class="change muted">No public changes were recorded for this version.</article>
+      }
+    </section>
+  }
+</main>`,
+			"data": `{"project":"SPL Template","latest":{"version":"v0.8.0","summary":"This release focuses on safer playground previews and richer real-world examples."},"versions":[{"version":"v0.8.0","date":"2026-06-10","owner":"Sujit","breaking":false,"changes":[{"kind":"feature","title":"Practical playground examples","body":"Added dashboard, invoice, form validation, navigation, and release-note templates.","breakingNote":"","tags":["playground","examples"]},{"kind":"fix","title":"Search understands descriptions","body":"Example filtering now matches the short purpose text shown in the sidebar.","breakingNote":"","tags":["ui","search"]}]},{"version":"v0.7.0","date":"2026-05-24","owner":"Template Team","breaking":true,"changes":[{"kind":"breaking","title":"Escaping defaults tightened","body":"Raw HTML now requires an explicit raw expression in new projects.","breakingNote":"Audit templates that intentionally render trusted HTML before upgrading.","tags":["security"]},{"kind":"docs","title":"Component slot notes","body":"Documented default and named slot behavior with examples.","breakingNote":"","tags":[]}]}]}`,
+		},
+		{
 			"name":     "reactive-html",
 			"label":    "Reactive HTML",
 			"category": "Reactive Templates",
