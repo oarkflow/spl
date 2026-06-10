@@ -2,7 +2,7 @@
 
 **Server-Powered Logic** — a Go template engine with SSR hydration, reactive signals, streaming, components, filters, and CSP-safe client interactivity.
 
-> **Module:** `github.com/oarkflow/spl` · **Go:** 1.26.1  
+> **Module:** `github.com/oarkflow/spl` · **Go:** 1.26.1
 > **Dependency:** `github.com/oarkflow/interpreter v0.0.11`
 
 ---
@@ -130,6 +130,15 @@ ${num | format "%.2f"}
 @computed(finalPrice = subtotal * (1 + taxRate))
 ```
 
+#### `@computedClient` — hydrated derived signal
+
+```
+@signal(first = "Ada")
+@signal(last = "Lovelace")
+@computedClient(fullName = first + " " + last, first, last)
+<p>@bind(fullName)</p>
+```
+
 #### `@signal` — reactive client-side state (SSR hydrated)
 
 ```
@@ -139,6 +148,17 @@ ${num | format "%.2f"}
 ```
 
 Signals are serialized into the hydration payload and become live JavaScript variables on the client. Changes automatically update all reactive bindings.
+
+#### `@local` — component-instance signal
+
+```
+@component("Counter") {
+  @local(count = 0)
+  <button on:click="count += 1">@bind(count)</button>
+}
+```
+
+Each component render receives its own hydrated signal name, so reusable interactive components do not share accidental state.
 
 #### `@raw` — literal block (no parsing)
 
@@ -164,6 +184,15 @@ Signals are serialized into the hydration payload and become live JavaScript var
 
 SSR with hydration: `@if` inside `@reactive` generates `data-spl-if` / `data-spl-else` markers for client-side reactivation.
 
+#### Conditional fragments
+
+```
+{change.breakingNote != '' && (
+  <div class="breaking">${change.breakingNote}</div>
+)}
+{fallbackVisible || <span>No fallback needed</span>}
+```
+
 ### Loops
 
 #### `@for`
@@ -181,6 +210,14 @@ With key and value:
 ```
 @for(i, item in items) {
     <li>#${i+1}: ${item}</li>
+}
+```
+
+With a stable hydration key:
+
+```
+@for(item in todos; key item.id) {
+    <article>${item.title}</article>
 }
 ```
 
@@ -239,12 +276,12 @@ Patterns support: literals, type checks (`x: integer`), destructuring (`[a, b]`)
 Define reusable components with declared props, compose them, and pass data via a variable:
 
 ```spl
-@component("Badge", label, color = '#666') {
+@component("Badge", label string, color string = '#666') {
   <style>.badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; color: white; background: ${color}; }</style>
   <span class="badge">${label}</span>
 }
 
-@component("Card", title, body, tag, tagColor) {
+@component("Card", title string, body string, tag string, tagColor string) {
   <style>.card { border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin: 8px 0; }</style>
   <div class="card">
     <h3>${title} @render("Badge", {"label": tag, "color": tagColor})</h3>
@@ -257,6 +294,8 @@ Define reusable components with declared props, compose them, and pass data via 
   @render("Card", item)
 }
 ```
+
+Declared component props are validated at render time. Props without a default and without a `?` prefix are required.
 
 With data:
 
@@ -271,8 +310,6 @@ With data:
 ```
 
 Components can be defined inline or in separate files loaded via `@import` or `RegisterComponent`. Declared props are matched by name from the passed hash or variable — no need to destructure.
-
-#### Named slots
 
 #### Named slots
 
@@ -537,6 +574,19 @@ The `data-spl-api-*` attributes enable REST calls without JavaScript.
 | `data-spl-attr="attrName"` | Which attribute to bind (used with `data-spl-bind`) |
 | `data-spl-on-{event}="..."` | Compiled event handler (output from `on:*` transformation) |
 | `bind:value="signal"` | Shorthand transformed to `data-spl-bind-value` |
+| `class:name="signal"` | Toggle a class reactively |
+| `style:property="signal"` | Update an inline style property reactively |
+| `data-spl-form-state="signal"` | Publish form validity, errors, touched, and dirty fields |
+| `data-spl-error-for="field"` | Render the current validation message for a form field |
+
+### Asset Policy
+
+```
+@assets("dedupe")
+@assets("raw")
+```
+
+Rendered CSS/JS/link assets are deduplicated by default. Use `raw` when a template intentionally needs repeated asset tags.
 
 ---
 

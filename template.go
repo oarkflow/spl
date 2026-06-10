@@ -89,7 +89,7 @@ type exprFastPath struct {
 type componentDef struct {
 	Body          []Node
 	Props         []PropDef // declared prop definitions (may be empty)
-	HasDynamicCSS bool     // true when <style> contains template expressions
+	HasDynamicCSS bool      // true when <style> contains template expressions
 }
 
 type compiledTemplate struct {
@@ -129,6 +129,9 @@ type Engine struct {
 	globalEnv           *interpreter.Environment // cached global environment (created once)
 	hydration           *hydrationState          // SSR hydration state for the current render call
 	assetScopeSeq       int                      // per-render sequence for data-spl-unique assets
+	assetMode           string                   // per-render asset policy: ""/"dedupe" or "raw"
+	localSignalSeq      int                      // per-render sequence for @local signal aliases
+	localSignals        map[string]string        // scoped signal aliases visible during render
 	HydrationRuntimeURL string                   // if set, emit <script src="..."> instead of inlining runtime
 	CSPNonce            string                   // optional nonce applied to executable hydration script tags
 	SecureMode          bool                     // enforce CSP-safe, non-eval hydration output (default: false)
@@ -339,6 +342,9 @@ func (e *Engine) cloneForRender(state *hydrationState, components map[string]com
 	cloned.baseEnv = interpreter.NewEnclosedEnvironment(globalEnv)
 	cloned.hydration = state
 	cloned.assetScopeSeq = 0
+	cloned.assetMode = ""
+	cloned.localSignalSeq = 0
+	cloned.localSignals = nil
 	return &cloned
 }
 
@@ -482,9 +488,15 @@ func (e *Engine) renderCompiled(ct *compiledTemplate, data map[string]any, state
 	cloned.baseEnv = interpreter.NewEnclosedEnvironment(globalEnv)
 	cloned.hydration = state
 	cloned.assetScopeSeq = 0
+	cloned.assetMode = ""
+	cloned.localSignalSeq = 0
+	cloned.localSignals = nil
 	out, err := (&cloned).renderNodes(ct.Nodes, data, 0)
 	if err != nil {
 		return "", err
+	}
+	if cloned.assetMode == "raw" {
+		return out, nil
 	}
 	return optimizeRenderedAssets(out), nil
 }

@@ -25,7 +25,8 @@ const (
 	featConditionals                       // patchConditionals
 	featRefs                               // patchRefs (data-spl-ref element refs)
 	featSchemaArrays                       // patchSchemaArrays + schemaArrayAction
-	featAll          = featCore | featScope | featDebug | featFocus | featBindings | featEvents | featModels | featAPI | featConditionals | featRefs | featSchemaArrays
+	featForms                              // patchForms validation state
+	featAll          = featCore | featScope | featDebug | featFocus | featBindings | featEvents | featModels | featAPI | featConditionals | featRefs | featSchemaArrays | featForms
 )
 
 // ---------------------------------------------------------------------------
@@ -556,6 +557,35 @@ SPL.patchBindings=function(root){
       }
     });
   });
+  var dynamicNodes=(root.matches && Array.from(root.attributes||[]).some(function(attr){return attr.name.indexOf('data-spl-class-')===0 || attr.name.indexOf('data-spl-style-')===0;}))?[root]:[];
+  dynamicNodes=dynamicNodes.concat(Array.from(root.querySelectorAll ? root.querySelectorAll('*') : []));
+  dynamicNodes.forEach(function(el){
+    Array.from(el.attributes||[]).forEach(function(attr){
+      var isClass=attr.name.indexOf('data-spl-class-')===0;
+      var isStyle=attr.name.indexOf('data-spl-style-')===0;
+      if(!isClass && !isStyle){return;}
+      var name=attr.name.slice(isClass?'data-spl-class-'.length:'data-spl-style-'.length);
+      var expr=attr.value;
+      var key='__splDyn_'+attr.name+'_'+expr;
+      if(el[key]){return;}
+      el[key]=true;
+      var path=SPL.normalizePath(expr);
+      var rootSignal=path?path.split('.')[0]:'';
+      var read=function(){
+        if(path){return SPL.readTarget(path);}
+        if(SPL.allowUnsafeEval && typeof SPL.evalExpression==='function'){return SPL.evalExpression(expr,null,el,false);}
+        return undefined;
+      };
+      var update=function(){
+        var value=read();
+        if(isClass){el.classList.toggle(name,Boolean(value));}
+        else{el.style[name]=value==null?'':String(value);}
+      };
+      update();
+      if(rootSignal){SPL.subscribe(rootSignal,update);}
+      else if(SPL.allowUnsafeEval && typeof SPL.extractDeps==='function'){SPL.extractDeps(expr).forEach(function(dep){SPL.subscribe(dep,update);});}
+    });
+  });
 };`
 
 // moduleEvents: patchEvents
@@ -866,6 +896,55 @@ const moduleRefs = `SPL.patchRefs=function(root){
   });
 };`
 
+const moduleForms = `SPL.formFieldName=function(field){
+  return field.getAttribute('data-spl-name') || field.name || field.id || '';
+};
+SPL.formState=function(form){
+  var errors={};var touched={};var dirty={};var valid=true;
+  Array.from(form.elements||[]).forEach(function(field){
+    var name=SPL.formFieldName(field);
+    if(!name || field.disabled){return;}
+    if(field.__splTouched){touched[name]=true;}
+    if(field.__splDirty){dirty[name]=true;}
+    if(typeof field.checkValidity==='function' && !field.checkValidity()){
+      valid=false;
+      errors[name]=field.validationMessage || 'Invalid value';
+    }
+  });
+  return {valid:valid,errors:errors,touched:touched,dirty:dirty};
+};
+SPL.patchForms=function(root){
+  var forms=(root.matches && root.matches('form[data-spl-form-state]'))?[root]:[];
+  forms=forms.concat(Array.from(root.querySelectorAll ? root.querySelectorAll('form[data-spl-form-state]') : []));
+  forms.forEach(function(form){
+    if(form.__splFormBound){return;}
+    form.__splFormBound=true;
+    var target=form.getAttribute('data-spl-form-state');
+    var publish=function(){
+      var state=SPL.formState(form);
+      if(target){SPL.writeTarget(target,state);}
+      Array.from(form.querySelectorAll('[data-spl-error-for]')).forEach(function(el){
+        var name=el.getAttribute('data-spl-error-for');
+        el.textContent=(state.errors&&state.errors[name])||'';
+        el.hidden=!el.textContent;
+      });
+    };
+    Array.from(form.elements||[]).forEach(function(field){
+      field.addEventListener('blur',function(){field.__splTouched=true;publish();});
+      field.addEventListener('input',function(){field.__splDirty=true;publish();});
+      field.addEventListener('change',function(){field.__splDirty=true;publish();});
+    });
+    form.addEventListener('submit',function(event){
+      Array.from(form.elements||[]).forEach(function(field){field.__splTouched=true;});
+      publish();
+      if(!form.checkValidity()){
+        event.preventDefault();
+      }
+    });
+    publish();
+  });
+};`
+
 // splBootstrapJS reads inert JSON hydration payloads and wires up the page
 // without inline bootstrap code.
 const splBootstrapJS = `SPL.bootPayload=function(payload){
@@ -877,6 +956,17 @@ Object.keys(payload.handlers||{}).forEach(function(name){
 var actions=payload.handlers[name];
 if(!actions){return;}
 SPL.registerHandler(name,actions);
+});
+(payload.computed||[]).forEach(function(item){
+if(!item || !item.Name){return;}
+var render=function(){
+var value;
+if(SPL.allowUnsafeEval && typeof SPL.evalExpression==='function'){value=SPL.evalExpression(item.Expr,null,null,false);}
+else{value=SPL.readTarget(item.Expr);}
+SPL.write(item.Name,value);
+};
+render();
+(item.Deps||[]).forEach(function(dep){SPL.subscribe(dep,render);});
 });
 SPL.patch(document);
 (payload.effects||[]).forEach(function(effect){
@@ -1134,6 +1224,9 @@ func buildPatchFunction(features jsFeature) string {
 	if features&featRefs != 0 {
 		calls = append(calls, "SPL.patchRefs(scope);")
 	}
+	if features&featForms != 0 {
+		calls = append(calls, "SPL.patchForms(scope);")
+	}
 	if len(calls) == 0 {
 		return "SPL.patch=function(){};"
 	}
@@ -1199,6 +1292,10 @@ func assembleRuntime(features jsFeature, disableDebug bool, secureMode bool) str
 		sb.WriteString(moduleRefs)
 		sb.WriteString("\n")
 	}
+	if features&featForms != 0 {
+		sb.WriteString(moduleForms)
+		sb.WriteString("\n")
+	}
 
 	// Patch function (adapted to included modules)
 	sb.WriteString(buildPatchFunction(features))
@@ -1228,7 +1325,7 @@ func detectFeatures(renderedHTML string, effects []hydrationEffect, views []hydr
 	}
 
 	for _, src := range sources {
-		if features&featBindings == 0 && strings.Contains(src, "data-spl-bind") {
+		if features&featBindings == 0 && (strings.Contains(src, "data-spl-bind") || strings.Contains(src, "data-spl-class-") || strings.Contains(src, "data-spl-style-")) {
 			features |= featBindings
 		}
 		if features&featEvents == 0 && strings.Contains(src, "data-spl-on-") {
@@ -1248,6 +1345,9 @@ func detectFeatures(renderedHTML string, effects []hydrationEffect, views []hydr
 		}
 		if features&featRefs == 0 && strings.Contains(src, "data-spl-ref") {
 			features |= featRefs
+		}
+		if features&featForms == 0 && strings.Contains(src, "data-spl-form-state") {
+			features |= featForms
 		}
 	}
 

@@ -748,6 +748,203 @@ func TestLogicalOrInExpr(t *testing.T) {
 	}
 }
 
+func TestConditionalRenderAndFragment(t *testing.T) {
+	e := New()
+	tmpl := `{change.breakingNote != '' && <div class="breaking">${change.breakingNote}</div>}`
+	out, err := e.Render(tmpl, map[string]any{
+		"change": map[string]any{"breakingNote": "Audit template output"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != `<div class="breaking">Audit template output</div>` {
+		t.Fatalf("expected rendered conditional fragment, got %q", out)
+	}
+
+	out, err = e.Render(tmpl, map[string]any{
+		"change": map[string]any{"breakingNote": ""},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "" {
+		t.Fatalf("expected hidden conditional fragment, got %q", out)
+	}
+}
+
+func TestConditionalRenderOrFragment(t *testing.T) {
+	e := New()
+	tmpl := `{change.breakingNote || <span class="muted">No breaking changes</span>}`
+	out, err := e.Render(tmpl, map[string]any{
+		"change": map[string]any{"breakingNote": ""},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != `<span class="muted">No breaking changes</span>` {
+		t.Fatalf("expected fallback fragment, got %q", out)
+	}
+
+	out, err = e.Render(tmpl, map[string]any{
+		"change": map[string]any{"breakingNote": "Requires migration"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "" {
+		t.Fatalf("expected fallback fragment to be hidden, got %q", out)
+	}
+}
+
+func TestConditionalRenderParenthesizedMultilineFragment(t *testing.T) {
+	e := New()
+	tmpl := `{change.breakingNote != '' && (
+    <div class="breaking">${change.breakingNote}</div>
+)}`
+	out, err := e.Render(tmpl, map[string]any{
+		"change": map[string]any{"breakingNote": "Requires migration"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(out) != `<div class="breaking">Requires migration</div>` {
+		t.Fatalf("expected parenthesized conditional fragment, got %q", out)
+	}
+}
+
+func TestConditionalRenderPreservesNestedBracketsAndBraces(t *testing.T) {
+	e := New()
+	e.AutoEscape = false
+	tmpl := `before {enabled && <section data-info="{literal}">
+  <style>.box { color: ${color}; } .box::after { content: "{ok}"; }</style>
+  <div class="box">${message}</div>
+</section>} after`
+	out, err := e.Render(tmpl, map[string]any{
+		"enabled": true,
+		"color":   "red",
+		"message": "Ready",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`before `,
+		`data-info="{literal}"`,
+		`.box { color: red; }`,
+		`content: "{ok}"`,
+		`<div class="box">Ready</div>`,
+		` after`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected output to contain %q, got %q", want, out)
+		}
+	}
+}
+
+func TestConditionalRenderLeavesPlainBracesAsText(t *testing.T) {
+	e := New()
+	out, err := e.Render(`<style>.box { color: red; }</style>`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != `<style>.box { color: red; }</style>` {
+		t.Fatalf("expected plain CSS braces to remain text, got %q", out)
+	}
+}
+
+func TestForKeyEmitsHydrationKeys(t *testing.T) {
+	e := New()
+	out, err := e.RenderSSR(`@signal(items = [{"id": "a", "name": "Alpha"}, {"id": "b", "name": "Beta"}])@for(item in items; key item.id) {<p>${item.name}</p>}`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `data-spl-key="a"`) || !strings.Contains(out, `data-spl-key="b"`) {
+		t.Fatalf("expected keyed loop metadata, got %q", out)
+	}
+}
+
+func TestReactiveClassAndStyleBindingsTransform(t *testing.T) {
+	e := New()
+	out, err := e.RenderSSR(`@signal(active = true)@signal(color = "red")<button class:active="active" style:color="color">Save</button>`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `data-spl-class-active="active"`) || !strings.Contains(out, `data-spl-style-color="color"`) {
+		t.Fatalf("expected dynamic class/style bindings, got %q", out)
+	}
+	if !strings.Contains(out, `data-spl-runtime`) {
+		t.Fatalf("expected bindings runtime, got %q", out)
+	}
+}
+
+func TestLocalSignalScopesComponentHydration(t *testing.T) {
+	e := New()
+	tmpl := `@component("Counter") {@local(count = 1)<button on:click="count += 1">@bind(count)</button>}@render("Counter")@render("Counter")`
+	out, err := e.RenderSSR(tmpl, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(out, `data-spl-bind="__spl_local_`) != 2 {
+		t.Fatalf("expected scoped local bind names, got %q", out)
+	}
+	if strings.Contains(out, `data-spl-on-click="count += 1"`) {
+		t.Fatalf("expected local event refs to be rewritten, got %q", out)
+	}
+}
+
+func TestComputedClientHydrationPayload(t *testing.T) {
+	e := New()
+	out, err := e.RenderSSR(`@signal(first = "Ada")@signal(last = "Lovelace")@computedClient(full = first + " " + last, first, last)<p>@bind(full)</p>`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"computed"`) || !strings.Contains(out, `"Name":"full"`) || !strings.Contains(out, `"Deps":["first","last"]`) {
+		t.Fatalf("expected computed hydration payload, got %q", out)
+	}
+}
+
+func TestAssetsRawPolicyKeepsDuplicates(t *testing.T) {
+	e := New()
+	out, err := e.Render(`@assets("raw")<style>.x{color:red}</style><style>.x{color:red}</style>`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(out, `<style>.x{color:red}</style>`) != 2 {
+		t.Fatalf("expected raw assets to keep duplicates, got %q", out)
+	}
+}
+
+func TestComponentPropValidation(t *testing.T) {
+	e := New()
+	_, err := e.Render(`@component("Badge", label string) {${label}}@render("Badge")`, nil)
+	if err == nil || !strings.Contains(err.Error(), `missing required prop "label"`) {
+		t.Fatalf("expected missing prop error, got %v", err)
+	}
+	_, err = e.Render(`@component("Badge", label string) {${label}}@render("Badge", {"label": 42})`, nil)
+	if err == nil || !strings.Contains(err.Error(), `expected string`) {
+		t.Fatalf("expected prop type error, got %v", err)
+	}
+}
+
+func TestDiagnosticsAnalysisAndFormatter(t *testing.T) {
+	e := New()
+	diagnostics := e.ValidateTemplate(`${unclosed`)
+	if len(diagnostics) != 1 || diagnostics[0].Severity != "error" || diagnostics[0].Line == 0 {
+		t.Fatalf("expected parse diagnostic with position, got %#v", diagnostics)
+	}
+	analysis := e.AnalyzeTemplate(`@signal(count = 0)@component("Badge") {${name | upper}}@render("Badge")`)
+	if len(analysis.Signals) != 1 || analysis.Signals[0] != "count" {
+		t.Fatalf("expected signal analysis, got %#v", analysis)
+	}
+	if len(analysis.Components) != 1 || analysis.Components[0] != "Badge" {
+		t.Fatalf("expected component analysis, got %#v", analysis)
+	}
+	formatted := FormatTemplate("@if(ok) {\n<p>Yes</p>\n}")
+	if !strings.Contains(formatted, "  <p>Yes</p>") {
+		t.Fatalf("expected formatted indentation, got %q", formatted)
+	}
+}
+
 func TestForHash(t *testing.T) {
 	e := New()
 	e.AutoEscape = false

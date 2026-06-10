@@ -18,6 +18,13 @@ type SignalNode struct {
 
 func (n *SignalNode) nodeType() string { return "signal" }
 
+type LocalNode struct {
+	Name        string
+	InitialExpr string
+}
+
+func (n *LocalNode) nodeType() string { return "local" }
+
 type EffectNode struct {
 	Body []Node
 	Deps []string
@@ -31,6 +38,20 @@ type ReactiveViewNode struct {
 }
 
 func (n *ReactiveViewNode) nodeType() string { return "reactive" }
+
+type ComputedClientNode struct {
+	Name string
+	Expr string
+	Deps []string
+}
+
+func (n *ComputedClientNode) nodeType() string { return "computed_client" }
+
+type AssetsNode struct {
+	Mode string
+}
+
+func (n *AssetsNode) nodeType() string { return "assets" }
 
 type BindNode struct {
 	Attr    string
@@ -52,6 +73,7 @@ func (n *ClickNode) nodeType() string { return "click" }
 type hydrationState struct {
 	Signals          map[string]any
 	Handlers         map[string]string
+	Computed         []hydrationComputed
 	CompiledHandlers map[string][]clientAction
 	Effects          []hydrationEffect
 	Views            []hydrationView
@@ -71,6 +93,12 @@ type hydrationView struct {
 	Selector string
 	Source   string
 	Deps     []string
+}
+
+type hydrationComputed struct {
+	Name string
+	Expr string
+	Deps []string
 }
 
 type SSRRenderer struct {
@@ -118,6 +146,7 @@ func (e *Engine) renderHydrationScript(renderedHTML string) string {
 	payload := map[string]any{
 		"signals":  e.hydration.Signals,
 		"handlers": handlers,
+		"computed": e.hydration.Computed,
 		"effects":  e.hydration.Effects,
 		"views":    e.hydration.Views,
 		"secure":   e.SecureMode,
@@ -331,8 +360,14 @@ func toJSValue(val any) string {
 
 var onEventPattern = regexp.MustCompile(`on:([a-zA-Z][a-zA-Z0-9_-]*)(\.[a-zA-Z][a-zA-Z0-9_-]*)*\s*=\s*"([^"]*)"`)
 var bindAttrPattern = regexp.MustCompile(`bind:([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*"([^"]*)"`)
+var classBindPattern = regexp.MustCompile(`class:([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*"([^"]*)"`)
+var styleBindPattern = regexp.MustCompile(`style:([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*"([^"]*)"`)
 
 func transformReactiveAttributes(raw string) string {
+	return transformReactiveAttributesWithAliases(raw, nil)
+}
+
+func transformReactiveAttributesWithAliases(raw string, aliases map[string]string) string {
 	out := onEventPattern.ReplaceAllStringFunc(raw, func(match string) string {
 		parts := onEventPattern.FindStringSubmatch(match)
 		if len(parts) != 4 {
@@ -340,13 +375,45 @@ func transformReactiveAttributes(raw string) string {
 		}
 		eventName := parts[1]
 		modsText := strings.TrimPrefix(parts[2], ".")
-		expr := html.EscapeString(parts[3])
+		expr := html.EscapeString(rewriteSignalRefs(parts[3], aliases))
 		if modsText == "" {
 			return fmt.Sprintf(`data-spl-on-%s="%s"`, eventName, expr)
 		}
 		mods := strings.ReplaceAll(modsText, ".", ",")
 		return fmt.Sprintf(`data-spl-on-%s="%s" data-spl-on-%s-mods="%s"`, eventName, expr, eventName, html.EscapeString(mods))
 	})
-	out = bindAttrPattern.ReplaceAllString(out, `data-spl-bind-$1="$2"`)
+	out = bindAttrPattern.ReplaceAllStringFunc(out, func(match string) string {
+		parts := bindAttrPattern.FindStringSubmatch(match)
+		if len(parts) != 3 {
+			return match
+		}
+		return fmt.Sprintf(`data-spl-bind-%s="%s"`, parts[1], html.EscapeString(rewriteSignalRefs(parts[2], aliases)))
+	})
+	out = classBindPattern.ReplaceAllStringFunc(out, func(match string) string {
+		parts := classBindPattern.FindStringSubmatch(match)
+		if len(parts) != 3 {
+			return match
+		}
+		return fmt.Sprintf(`data-spl-class-%s="%s"`, parts[1], html.EscapeString(rewriteSignalRefs(parts[2], aliases)))
+	})
+	out = styleBindPattern.ReplaceAllStringFunc(out, func(match string) string {
+		parts := styleBindPattern.FindStringSubmatch(match)
+		if len(parts) != 3 {
+			return match
+		}
+		return fmt.Sprintf(`data-spl-style-%s="%s"`, parts[1], html.EscapeString(rewriteSignalRefs(parts[2], aliases)))
+	})
+	return out
+}
+
+func rewriteSignalRefs(expr string, aliases map[string]string) string {
+	if len(aliases) == 0 || expr == "" {
+		return expr
+	}
+	out := expr
+	for local, scoped := range aliases {
+		re := regexp.MustCompile(`\b` + regexp.QuoteMeta(local) + `\b`)
+		out = re.ReplaceAllString(out, scoped)
+	}
 	return out
 }

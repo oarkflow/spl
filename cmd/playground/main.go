@@ -676,6 +676,72 @@ input, select, textarea { width: 100%; box-sizing: border-box; border: 1px solid
 			"data":     `{"title": "DOM Events + Bindings", "start": 1, "initialName": "SPL"}`,
 		},
 		{
+			"name":     "flexible-reactive-ui",
+			"label":    "Flexible Reactive UI",
+			"category": "Reactive Templates",
+			"tags":     []string{"local", "computed", "forms", "class", "style", "keys"},
+			"template": `<style>
+.flex-demo { font-family: ui-sans-serif, system-ui, sans-serif; max-width: 48rem; margin: 1rem auto; display: grid; gap: 1rem; color: #172033; }
+.toolbar { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
+.chip { border: 1px solid #cbd5e1; background: white; border-radius: 8px; padding: 0.45rem 0.65rem; cursor: pointer; }
+.chip.active { color: white; border-color: #0f766e; }
+.card-list { display: grid; gap: 0.65rem; }
+.card { border: 1px solid #d7e0ea; border-radius: 8px; padding: 0.85rem; background: white; display: grid; gap: 0.35rem; }
+.counter { display: inline-flex; gap: 0.5rem; align-items: center; }
+.counter button { border: 1px solid #9db1c5; background: #f8fafc; border-radius: 7px; padding: 0.35rem 0.55rem; cursor: pointer; }
+.field { display: grid; gap: 0.35rem; }
+.field input { border: 1px solid #cbd5e1; border-radius: 8px; padding: 0.65rem 0.75rem; font: inherit; }
+.error { color: #dc2626; font-size: 0.82rem; min-height: 1rem; }
+.summary { color: #475569; }
+</style>
+@signal(activeKind = "feature")
+@signal(accent = "#0f766e")
+@signal(formState = {})
+@signal(items = [{"id":"f1","kind":"feature","title":"Scoped component state"},{"id":"b1","kind":"bug","title":"Keyed hydration rows"},{"id":"f2","kind":"feature","title":"Class and style bindings"}])
+@computedClient(activeLabel = activeKind, activeKind)
+
+@component("MiniCounter", label string) {
+  @local(count = 0)
+  <div class="counter">
+    <button type="button" on:click="count -= 1">-</button>
+    <strong>${label}: @bind(count)</strong>
+    <button type="button" on:click="count += 1">+</button>
+  </div>
+}
+
+<main class="flex-demo">
+  <section class="toolbar">
+    <button type="button" class="chip" class:active="activeKind == 'feature'" style:backgroundColor="accent" on:click="activeKind = 'feature'">Feature</button>
+    <button type="button" class="chip" class:active="activeKind == 'bug'" on:click="activeKind = 'bug'">Bug</button>
+    <input bind:value="accent" aria-label="Accent color" />
+  </section>
+
+  <p class="summary">Active filter: @bind(activeLabel)</p>
+  @render("MiniCounter", {"label":"First"})
+  @render("MiniCounter", {"label":"Second"})
+
+  <div class="card-list">
+    @for(item in items; key item.id) {
+      {item.kind == activeKind && (
+        <article class="card">
+          <strong>${item.title}</strong>
+          <span>${item.kind}</span>
+        </article>
+      )}
+    }
+  </div>
+
+  <form data-spl-form-state="formState" novalidate>
+    <label class="field">
+      Email
+      <input name="email" type="email" required placeholder="name@example.com" />
+      <span class="error" data-spl-error-for="email"></span>
+    </label>
+  </form>
+</main>`,
+			"data": `{"title":"Flexible Reactive UI"}`,
+		},
+		{
 			"name":     "callbacks-handlers",
 			"label":    "Functions, Handlers, Callbacks",
 			"category": "Reactive Templates",

@@ -42,12 +42,23 @@ type IfNode struct {
 
 func (n *IfNode) nodeType() string { return "if" }
 
+// ConditionalRenderNode supports JSX-like conditional fragments:
+// {condition && <div>...</div>} and {condition || <div>...</div>}.
+type ConditionalRenderNode struct {
+	Cond string
+	Op   string // "&&" renders when truthy; "||" renders when falsy
+	Body []Node
+}
+
+func (n *ConditionalRenderNode) nodeType() string { return "conditional-render" }
+
 type ForNode struct {
-	KeyVar string // "" if only value
-	ValVar string
-	Iter   string // SPL expression for the iterable
-	Body   []Node
-	Empty  []Node // rendered when iterable is empty
+	KeyVar  string // "" if only value
+	ValVar  string
+	Iter    string // SPL expression for the iterable
+	KeyExpr string // optional stable key expression for hydrated list metadata
+	Body    []Node
+	Empty   []Node // rendered when iterable is empty
 }
 
 func (n *ForNode) nodeType() string { return "for" }
@@ -132,6 +143,7 @@ func (n *DefineNode) nodeType() string { return "define" }
 type PropDef struct {
 	Name     string // external prop name (what the caller passes)
 	Alias    string // internal variable name ("" = same as Name)
+	Type     string // optional simple type: string, number, bool, array, object
 	Default  string // SPL expression for default value ("" = none)
 	Optional bool   // true when declared as ?name (NULL if not passed)
 }
@@ -361,6 +373,19 @@ func (p *parser) parseNodes(inBlock bool) ([]Node, error) {
 			continue
 		}
 
+		// JSX-like conditional fragment: {condition && <fragment>} or {condition || <fragment>}
+		if p.peek() == '{' {
+			if node, ok, err := p.tryParseConditionalRender(); ok || err != nil {
+				if err != nil {
+					return nil, err
+				}
+				flushText()
+				nodes = append(nodes, node)
+				prevTextRune = 0
+				continue
+			}
+		}
+
 		// Directive: @keyword
 		if p.peek() == '@' {
 			// Check what follows
@@ -508,6 +533,14 @@ func (p *parser) parseNodes(inBlock bool) ([]Node, error) {
 				}
 				nodes = append(nodes, node)
 				continue
+			case "computedClient":
+				flushText()
+				node, err := p.parseComputedClient()
+				if err != nil {
+					return nil, err
+				}
+				nodes = append(nodes, node)
+				continue
 			case "watch":
 				flushText()
 				node, err := p.parseWatch()
@@ -519,6 +552,22 @@ func (p *parser) parseNodes(inBlock bool) ([]Node, error) {
 			case "signal":
 				flushText()
 				node, err := p.parseSignal()
+				if err != nil {
+					return nil, err
+				}
+				nodes = append(nodes, node)
+				continue
+			case "local":
+				flushText()
+				node, err := p.parseLocal()
+				if err != nil {
+					return nil, err
+				}
+				nodes = append(nodes, node)
+				continue
+			case "assets":
+				flushText()
+				node, err := p.parseAssets()
 				if err != nil {
 					return nil, err
 				}
@@ -653,6 +702,185 @@ func (p *parser) peekKeyword() string {
 
 func isAlpha(r rune) bool {
 	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_'
+}
+
+func (p *parser) tryParseConditionalRender() (*ConditionalRenderNode, bool, error) {
+	start := p.pos
+	content, ok, err := p.readBalancedSingleBraceContent()
+	if err != nil {
+		p.pos = start
+		return nil, false, err
+	}
+	if !ok {
+		p.pos = start
+		return nil, false, nil
+	}
+
+	cond, op, fragment, ok := splitConditionalRenderContent(content)
+	if !ok {
+		p.pos = start
+		return nil, false, nil
+	}
+
+	body, err := parse(fragment)
+	if err != nil {
+		return nil, false, p.errorf("conditional fragment: %w", err)
+	}
+	return &ConditionalRenderNode{Cond: cond, Op: op, Body: body}, true, nil
+}
+
+func (p *parser) readBalancedSingleBraceContent() (string, bool, error) {
+	if p.peek() != '{' || p.peekAt(1) == '{' {
+		return "", false, nil
+	}
+	p.advance()
+	var buf strings.Builder
+	depth := 1
+	for !p.eof() && depth > 0 {
+		ch := p.peek()
+		if ch == '"' || ch == '\'' || ch == '`' {
+			buf.WriteString(p.readStringLiteral())
+			continue
+		}
+		if ch == '/' && p.peekAt(1) == '/' {
+			buf.WriteRune(p.advance())
+			buf.WriteRune(p.advance())
+			for !p.eof() && p.peek() != '\n' {
+				buf.WriteRune(p.advance())
+			}
+			continue
+		}
+		if ch == '/' && p.peekAt(1) == '*' {
+			buf.WriteRune(p.advance())
+			buf.WriteRune(p.advance())
+			for !p.eof() {
+				c := p.advance()
+				buf.WriteRune(c)
+				if c == '*' && p.peek() == '/' {
+					buf.WriteRune(p.advance())
+					break
+				}
+			}
+			continue
+		}
+		if ch == '{' {
+			depth++
+			buf.WriteRune(p.advance())
+			continue
+		}
+		if ch == '}' {
+			depth--
+			if depth == 0 {
+				p.advance()
+				return buf.String(), true, nil
+			}
+			buf.WriteRune(p.advance())
+			continue
+		}
+		buf.WriteRune(p.advance())
+	}
+	return "", false, p.errorf("unclosed conditional fragment")
+}
+
+func splitConditionalRenderContent(content string) (cond, op, fragment string, ok bool) {
+	runes := []rune(content)
+	depth := 0
+	var quote rune
+	escaped := false
+	bestIndex := -1
+	bestOp := ""
+
+	for i := 0; i < len(runes)-1; i++ {
+		ch := runes[i]
+		if quote != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch ch {
+		case '"', '\'', '`':
+			quote = ch
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		case '&', '|':
+			if depth == 0 && runes[i+1] == ch {
+				next := i + 2
+				for next < len(runes) && (runes[next] == ' ' || runes[next] == '\t' || runes[next] == '\n' || runes[next] == '\r') {
+					next++
+				}
+				if next < len(runes) && (runes[next] == '<' || runes[next] == '(') {
+					bestIndex = i
+					bestOp = string([]rune{ch, ch})
+				}
+				i++
+			}
+		}
+	}
+
+	if bestIndex < 0 {
+		return "", "", "", false
+	}
+	cond = strings.TrimSpace(string(runes[:bestIndex]))
+	fragment = strings.TrimSpace(string(runes[bestIndex+2:]))
+	fragment = strings.TrimSpace(unwrapConditionalFragmentParens(fragment))
+	if cond == "" || fragment == "" || !strings.HasPrefix(fragment, "<") {
+		return "", "", "", false
+	}
+	return cond, bestOp, fragment, true
+}
+
+func unwrapConditionalFragmentParens(fragment string) string {
+	if !strings.HasPrefix(fragment, "(") || !strings.HasSuffix(fragment, ")") {
+		return fragment
+	}
+	runes := []rune(fragment)
+	depth := 0
+	var quote rune
+	escaped := false
+	for i, ch := range runes {
+		if quote != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch ch {
+		case '"', '\'', '`':
+			quote = ch
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 && i != len(runes)-1 {
+				return fragment
+			}
+		}
+	}
+	if depth != 0 {
+		return fragment
+	}
+	return strings.TrimSpace(string(runes[1 : len(runes)-1]))
 }
 
 // parseExpr parses ${expr}, ${raw expr}, ${expr | filter}
@@ -906,8 +1134,21 @@ func (p *parser) parseFor() (*ForNode, error) {
 	}
 
 	node := &ForNode{}
-	// Parse "item in items" or "i, item in items" or "key, val in hash"
+	// Parse "item in items", "i, item in items", or "item in items; key item.id".
 	inner = strings.TrimSpace(inner)
+	if parts := splitTopLevelSemicolons(inner); len(parts) > 1 {
+		inner = strings.TrimSpace(parts[0])
+		for _, opt := range parts[1:] {
+			opt = strings.TrimSpace(opt)
+			if strings.HasPrefix(opt, "key ") {
+				node.KeyExpr = strings.TrimSpace(opt[len("key "):])
+			} else if strings.HasPrefix(opt, "key=") {
+				node.KeyExpr = strings.TrimSpace(opt[len("key="):])
+			} else {
+				return nil, p.errorf("@for: unknown option %q", opt)
+			}
+		}
+	}
 	inIdx := strings.Index(inner, " in ")
 	if inIdx < 0 {
 		return nil, p.errorf("@for: expected 'VAR in EXPR' syntax, got: %s", inner)
@@ -1150,6 +1391,51 @@ func splitCaseValues(s string) []string {
 	if buf.Len() > 0 {
 		parts = append(parts, strings.TrimSpace(buf.String()))
 	}
+	return parts
+}
+
+func splitTopLevelSemicolons(s string) []string {
+	var parts []string
+	var buf strings.Builder
+	depth := 0
+	inStr := rune(0)
+	runes := []rune(s)
+	for i := 0; i < len(runes); i++ {
+		ch := runes[i]
+		if inStr != 0 {
+			buf.WriteRune(ch)
+			if ch == '\\' && i+1 < len(runes) {
+				i++
+				buf.WriteRune(runes[i])
+			} else if ch == inStr {
+				inStr = 0
+			}
+			continue
+		}
+		switch ch {
+		case '"', '\'', '`':
+			inStr = ch
+			buf.WriteRune(ch)
+		case '(', '{', '[':
+			depth++
+			buf.WriteRune(ch)
+		case ')', '}', ']':
+			if depth > 0 {
+				depth--
+			}
+			buf.WriteRune(ch)
+		case ';':
+			if depth == 0 {
+				parts = append(parts, strings.TrimSpace(buf.String()))
+				buf.Reset()
+				continue
+			}
+			buf.WriteRune(ch)
+		default:
+			buf.WriteRune(ch)
+		}
+	}
+	parts = append(parts, strings.TrimSpace(buf.String()))
 	return parts
 }
 
@@ -1433,8 +1719,28 @@ func parsePropDef(token string) (PropDef, error) {
 		pd.Name = strings.TrimSpace(namePart)
 	}
 
+	nameFields := strings.Fields(pd.Name)
+	if len(nameFields) > 1 {
+		pd.Name = nameFields[0]
+		pd.Type = nameFields[1]
+	}
+	if pd.Alias != "" {
+		aliasFields := strings.Fields(pd.Alias)
+		if len(aliasFields) > 1 {
+			pd.Alias = aliasFields[0]
+			if pd.Type == "" {
+				pd.Type = aliasFields[1]
+			}
+		}
+	}
+
 	if pd.Name == "" {
 		return PropDef{}, fmt.Errorf("prop name is required")
+	}
+	switch pd.Type {
+	case "", "string", "number", "bool", "boolean", "array", "object", "any":
+	default:
+		return PropDef{}, fmt.Errorf("unsupported prop type %q", pd.Type)
 	}
 	return pd, nil
 }
@@ -1607,6 +1913,35 @@ func (p *parser) parseComputed() (*ComputedNode, error) {
 	return &ComputedNode{VarName: varName, Expr: expr}, nil
 }
 
+// parseComputedClient parses @computedClient(name = expr, dep1, dep2).
+func (p *parser) parseComputedClient() (*ComputedClientNode, error) {
+	p.advanceN(15) // skip '@computedClient'
+	inner, err := p.readParenExpr()
+	if err != nil {
+		return nil, p.errorf("@computedClient: %w", err)
+	}
+	parts := splitCaseValues(inner)
+	if len(parts) == 0 {
+		return nil, p.errorf("@computedClient: expected 'name = expr' syntax")
+	}
+	idx := findFirstAssignEquals(parts[0])
+	if idx < 0 {
+		return nil, p.errorf("@computedClient: expected 'name = expr' syntax")
+	}
+	name := strings.TrimSpace(parts[0][:idx])
+	expr := strings.TrimSpace(parts[0][idx+1:])
+	if name == "" || expr == "" {
+		return nil, p.errorf("@computedClient: name and expression are required")
+	}
+	var deps []string
+	for _, dep := range parts[1:] {
+		if dep = strings.TrimSpace(dep); dep != "" {
+			deps = append(deps, dep)
+		}
+	}
+	return &ComputedClientNode{Name: name, Expr: expr, Deps: deps}, nil
+}
+
 // parseWatch parses @watch(expr) { body }
 func (p *parser) parseWatch() (*WatchNode, error) {
 	p.advanceN(6) // skip '@watch'
@@ -1643,6 +1978,49 @@ func (p *parser) parseSignal() (*SignalNode, error) {
 		return nil, p.errorf("@signal: name and expression are required")
 	}
 	return &SignalNode{Name: name, InitialExpr: expr}, nil
+}
+
+// parseLocal parses @local(name = expr), a component-instance signal.
+func (p *parser) parseLocal() (*LocalNode, error) {
+	p.advanceN(6) // skip '@local'
+	inner, err := p.readParenExpr()
+	if err != nil {
+		return nil, p.errorf("@local: %w", err)
+	}
+	idx := findFirstAssignEquals(inner)
+	if idx < 0 {
+		return nil, p.errorf("@local: expected 'name = expr' syntax")
+	}
+	name := strings.TrimSpace(inner[:idx])
+	expr := strings.TrimSpace(inner[idx+1:])
+	if name == "" || expr == "" {
+		return nil, p.errorf("@local: name and expression are required")
+	}
+	return &LocalNode{Name: name, InitialExpr: expr}, nil
+}
+
+// parseAssets parses @assets("dedupe") or @assets(mode = "raw").
+func (p *parser) parseAssets() (*AssetsNode, error) {
+	p.advanceN(7) // skip '@assets'
+	inner, err := p.readParenExpr()
+	if err != nil {
+		return nil, p.errorf("@assets: %w", err)
+	}
+	mode := strings.TrimSpace(inner)
+	if idx := findFirstAssignEquals(mode); idx >= 0 {
+		key := strings.TrimSpace(mode[:idx])
+		if key != "mode" {
+			return nil, p.errorf("@assets: unknown option %q", key)
+		}
+		mode = strings.TrimSpace(mode[idx+1:])
+	}
+	mode = unquote(mode)
+	switch mode {
+	case "", "dedupe", "raw":
+		return &AssetsNode{Mode: mode}, nil
+	default:
+		return nil, p.errorf("@assets: unsupported mode %q", mode)
+	}
 }
 
 // parseBind parses @bind(signal) or @bind(signal, attr)

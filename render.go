@@ -250,7 +250,7 @@ func (e *Engine) renderNode(n Node, env *interpreter.Environment, data map[strin
 	switch v := n.(type) {
 	case *TextNode:
 		if e.hydration != nil {
-			return transformReactiveAttributes(v.Text), nil
+			return transformReactiveAttributesWithAliases(v.Text, e.localSignals), nil
 		}
 		return v.Text, nil
 
@@ -259,6 +259,9 @@ func (e *Engine) renderNode(n Node, env *interpreter.Environment, data map[strin
 
 	case *IfNode:
 		return e.renderIf(v, env, data, depth)
+
+	case *ConditionalRenderNode:
+		return e.renderConditionalRender(v, env, data, depth)
 
 	case *ForNode:
 		return e.renderFor(v, env, data, depth)
@@ -305,11 +308,21 @@ func (e *Engine) renderNode(n Node, env *interpreter.Environment, data map[strin
 	case *ComputedNode:
 		return e.renderComputed(v, env, data, depth)
 
+	case *ComputedClientNode:
+		return e.renderComputedClient(v, env, data, depth)
+
 	case *WatchNode:
 		return e.renderWatch(v, env, data, depth)
 
 	case *SignalNode:
 		return e.renderSignal(v, env, data, depth)
+
+	case *LocalNode:
+		return e.renderLocal(v, env, data, depth)
+
+	case *AssetsNode:
+		e.assetMode = v.Mode
+		return "", nil
 
 	case *BindNode:
 		return e.renderBind(v, env, data, depth)
@@ -442,6 +455,33 @@ func (e *Engine) renderIf(n *IfNode, env *interpreter.Environment, data map[stri
 	return "", nil
 }
 
+func (e *Engine) renderConditionalRender(n *ConditionalRenderNode, env *interpreter.Environment, data map[string]any, depth int) (string, error) {
+	obj, err := e.evalExpr(n.Cond, env)
+	if err != nil {
+		return "", fmt.Errorf("conditional fragment {%s %s ...}: %w", n.Cond, n.Op, err)
+	}
+	truthy := isConditionalRenderTruthy(obj)
+	if (n.Op == "&&" && truthy) || (n.Op == "||" && !truthy) {
+		return e.renderBody(n.Body, env, data, depth)
+	}
+	return "", nil
+}
+
+func isConditionalRenderTruthy(obj interpreter.Object) bool {
+	switch v := obj.(type) {
+	case *interpreter.String:
+		return v.Value != ""
+	case *interpreter.Array:
+		return len(v.Elements) > 0
+	case *interpreter.Hash:
+		return len(v.Pairs) > 0
+	case *lazyHash:
+		return len(v.data) > 0
+	default:
+		return interpreter.IsTruthy(obj)
+	}
+}
+
 func (e *Engine) renderFor(n *ForNode, env *interpreter.Environment, data map[string]any, depth int) (string, error) {
 	iterObj, err := e.evalExpr(n.Iter, env)
 	if err != nil {
@@ -540,6 +580,13 @@ func (e *Engine) renderFor(n *ForNode, env *interpreter.Environment, data map[st
 		s, err := e.renderBody(n.Body, env, data, depth)
 		if err != nil {
 			return "", err
+		}
+		if e.hydration != nil && n.KeyExpr != "" {
+			keyObj, err := e.evalExpr(n.KeyExpr, env)
+			if err != nil {
+				return "", fmt.Errorf("@for key: %w", err)
+			}
+			s = fmt.Sprintf(`<span data-spl-key="%s" style="display: contents;">%s</span>`, html.EscapeString(objectToString(keyObj)), s)
 		}
 		buf.WriteString(s)
 	}
@@ -888,11 +935,17 @@ func (e *Engine) renderRender(n *RenderNode, env *interpreter.Environment, data 
 				key := &interpreter.String{Value: pd.Name}
 				hk := key.HashKey()
 				if pair, exists := propsHash.Pairs[hk]; exists {
+					if err := validateComponentProp(n.Name, pd, pair.Value); err != nil {
+						return "", err
+					}
 					compEnv.Set(varName, pair.Value)
 				} else if pd.Default != "" {
 					obj, err := e.evalExpr(pd.Default, env)
 					if err != nil {
 						return "", fmt.Errorf("@component %q prop %q default: %w", n.Name, pd.Name, err)
+					}
+					if err := validateComponentProp(n.Name, pd, obj); err != nil {
+						return "", err
 					}
 					compEnv.Set(varName, obj)
 					// Add default to props hash so props.xxx reflects it
@@ -901,6 +954,8 @@ func (e *Engine) renderRender(n *RenderNode, env *interpreter.Environment, data 
 				} else if pd.Optional {
 					compEnv.Set(varName, interpreter.NULL)
 					propsHash.Pairs[hk] = interpreter.HashPair{Key: key, Value: interpreter.NULL}
+				} else {
+					return "", fmt.Errorf("@render %q: missing required prop %q", n.Name, pd.Name)
 				}
 			}
 			_ = needsPropsRebuild // props hash was modified in-place
@@ -912,15 +967,24 @@ func (e *Engine) renderRender(n *RenderNode, env *interpreter.Environment, data 
 					varName = pd.Alias
 				}
 				if val, exists := propsLazy.data[pd.Name]; exists {
-					compEnv.Set(varName, toLazyObject(val))
+					obj := toLazyObject(val)
+					if err := validateComponentProp(n.Name, pd, obj); err != nil {
+						return "", err
+					}
+					compEnv.Set(varName, obj)
 				} else if pd.Default != "" {
 					obj, err := e.evalExpr(pd.Default, env)
 					if err != nil {
 						return "", fmt.Errorf("@component %q prop %q default: %w", n.Name, pd.Name, err)
 					}
+					if err := validateComponentProp(n.Name, pd, obj); err != nil {
+						return "", err
+					}
 					compEnv.Set(varName, obj)
 				} else if pd.Optional {
 					compEnv.Set(varName, interpreter.NULL)
+				} else {
+					return "", fmt.Errorf("@render %q: missing required prop %q", n.Name, pd.Name)
 				}
 			}
 			// Keep lazyHash as props — fastDotAccess handles it for props.field access
@@ -938,11 +1002,16 @@ func (e *Engine) renderRender(n *RenderNode, env *interpreter.Environment, data 
 					if err != nil {
 						return "", fmt.Errorf("@component %q prop %q default: %w", n.Name, pd.Name, err)
 					}
+					if err := validateComponentProp(n.Name, pd, obj); err != nil {
+						return "", err
+					}
 					compEnv.Set(varName, obj)
 					pairs[key.HashKey()] = interpreter.HashPair{Key: key, Value: obj}
 				} else if pd.Optional {
 					compEnv.Set(varName, interpreter.NULL)
 					pairs[key.HashKey()] = interpreter.HashPair{Key: key, Value: interpreter.NULL}
+				} else {
+					return "", fmt.Errorf("@render %q: missing required prop %q", n.Name, pd.Name)
 				}
 			}
 			propsObj = &interpreter.Hash{Pairs: pairs}
@@ -974,6 +1043,15 @@ func (e *Engine) renderRender(n *RenderNode, env *interpreter.Environment, data 
 	// Push slot context and render component body
 	e.pushSlotContext(&slotContext{fills: fills, children: childrenStr})
 	defer e.popSlotContext()
+	prevLocalSignals := e.localSignals
+	if prevLocalSignals != nil {
+		copied := make(map[string]string, len(prevLocalSignals))
+		for k, v := range prevLocalSignals {
+			copied[k] = v
+		}
+		e.localSignals = copied
+	}
+	defer func() { e.localSignals = prevLocalSignals }()
 
 	out, err := e.renderBody(comp.Body, compEnv, data, depth+1)
 	if err != nil {
@@ -1009,6 +1087,35 @@ func hasUnscoedUniqueAssetTags(html string) bool {
 		}
 	}
 	return false
+}
+
+func validateComponentProp(component string, pd PropDef, obj interpreter.Object) error {
+	if pd.Type == "" || pd.Type == "any" || obj == nil || obj.Type() == interpreter.NULL_OBJ {
+		return nil
+	}
+	ok := false
+	switch pd.Type {
+	case "string":
+		_, ok = obj.(*interpreter.String)
+	case "number":
+		switch obj.(type) {
+		case *interpreter.Integer, *interpreter.Float:
+			ok = true
+		}
+	case "bool", "boolean":
+		_, ok = obj.(*interpreter.Boolean)
+	case "array":
+		_, ok = obj.(*interpreter.Array)
+	case "object":
+		switch obj.(type) {
+		case *interpreter.Hash, *lazyHash:
+			ok = true
+		}
+	}
+	if !ok {
+		return fmt.Errorf("@render %q: prop %q expected %s, got %s", component, pd.Name, pd.Type, obj.Type())
+	}
+	return nil
 }
 
 func (e *Engine) renderSlot(n *SlotNode) (string, error) {
@@ -1071,6 +1178,33 @@ func (e *Engine) renderComputed(n *ComputedNode, env *interpreter.Environment, d
 	return "", nil
 }
 
+func (e *Engine) renderComputedClient(n *ComputedClientNode, env *interpreter.Environment, data map[string]any, depth int) (string, error) {
+	obj, err := e.evalExpr(n.Expr, env)
+	if err != nil {
+		return "", fmt.Errorf("@computedClient(%s): %w", n.Name, err)
+	}
+	env.Set(n.Name, obj)
+	if data != nil {
+		data[n.Name] = objectToNative(obj)
+	}
+	if e.hydration != nil {
+		name := e.mapSignalName(n.Name)
+		deps := make([]string, 0, len(n.Deps))
+		for _, dep := range n.Deps {
+			if dep = strings.TrimSpace(dep); dep != "" {
+				deps = append(deps, e.mapSignalName(dep))
+			}
+		}
+		e.hydration.Computed = append(e.hydration.Computed, hydrationComputed{
+			Name: name,
+			Expr: rewriteSignalRefs(n.Expr, e.localSignals),
+			Deps: deps,
+		})
+		e.registerSignal(name, obj)
+	}
+	return "", nil
+}
+
 func (e *Engine) renderWatch(n *WatchNode, env *interpreter.Environment, data map[string]any, depth int) (string, error) {
 	obj, err := e.evalExpr(n.Expr, env)
 	if err != nil {
@@ -1102,6 +1236,42 @@ func (e *Engine) renderSignal(n *SignalNode, env *interpreter.Environment, data 
 	return "", nil
 }
 
+func (e *Engine) renderLocal(n *LocalNode, env *interpreter.Environment, data map[string]any, depth int) (string, error) {
+	obj, err := e.evalExpr(n.InitialExpr, env)
+	if err != nil {
+		return "", fmt.Errorf("@local(%s): %w", n.Name, err)
+	}
+	env.Set(n.Name, obj)
+	if e.hydration != nil {
+		alias := e.ensureLocalSignal(n.Name)
+		e.registerSignal(alias, obj)
+	}
+	return "", nil
+}
+
+func (e *Engine) ensureLocalSignal(name string) string {
+	if e.localSignals == nil {
+		e.localSignals = make(map[string]string)
+	}
+	if existing := e.localSignals[name]; existing != "" {
+		return existing
+	}
+	e.localSignalSeq++
+	alias := fmt.Sprintf("__spl_local_%d_%s", e.localSignalSeq, name)
+	e.localSignals[name] = alias
+	return alias
+}
+
+func (e *Engine) mapSignalName(name string) string {
+	if e.localSignals == nil {
+		return name
+	}
+	if alias := e.localSignals[name]; alias != "" {
+		return alias
+	}
+	return name
+}
+
 func (e *Engine) renderBind(n *BindNode, env *interpreter.Environment, data map[string]any, depth int) (string, error) {
 	obj, err := e.evalExpr(n.Signal, env)
 	if err != nil {
@@ -1111,7 +1281,7 @@ func (e *Engine) renderBind(n *BindNode, env *interpreter.Environment, data map[
 		return signalValueForAttr(n.Attr, obj), nil
 	}
 	id := e.nextBindID()
-	return WrapWithHydration(signalValueForAttr(n.Attr, obj), n.Signal, n.Attr, id), nil
+	return WrapWithHydration(signalValueForAttr(n.Attr, obj), e.mapSignalName(n.Signal), n.Attr, id), nil
 }
 
 func (e *Engine) renderEffect(n *EffectNode, env *interpreter.Environment, data map[string]any, depth int) (string, error) {
@@ -1124,15 +1294,18 @@ func (e *Engine) renderEffect(n *EffectNode, env *interpreter.Environment, data 
 	}
 	selector := e.nextEffectSelector()
 	effectEnv := interpreter.NewEnclosedEnvironment(env)
+	mappedDeps := make([]string, 0, len(n.Deps))
 	for _, dep := range n.Deps {
 		dep = strings.TrimSpace(dep)
 		if dep == "" {
 			continue
 		}
+		mappedDep := e.mapSignalName(dep)
+		mappedDeps = append(mappedDeps, mappedDep)
 		if obj, ok := env.Get(dep); ok && isCompoundObject(obj) {
-			effectEnv.Set(dep, makePlaceholderObject(obj, dep))
+			effectEnv.Set(dep, makePlaceholderObject(obj, mappedDep))
 		} else {
-			effectEnv.Set(dep, &interpreter.String{Value: signalPlaceholder(dep)})
+			effectEnv.Set(dep, &interpreter.String{Value: signalPlaceholder(mappedDep)})
 		}
 	}
 	body, err := e.renderBody(n.Body, effectEnv, data, depth)
@@ -1140,7 +1313,7 @@ func (e *Engine) renderEffect(n *EffectNode, env *interpreter.Environment, data 
 		return "", fmt.Errorf("@effect: %w", err)
 	}
 	compiled := compileHydrationHTML(body)
-	e.trackEffectHTML(selector, compiled, n.Deps)
+	e.trackEffectHTML(selector, compiled, mappedDeps)
 	return fmt.Sprintf(`<div data-spl-effect="%d" style="display: contents;">%s</div>`, e.hydration.EffectsID, initialBody), nil
 }
 
@@ -1154,22 +1327,25 @@ func (e *Engine) renderReactiveView(n *ReactiveViewNode, env *interpreter.Enviro
 	}
 	selector := e.nextViewSelector()
 	viewEnv := interpreter.NewEnclosedEnvironment(env)
+	mappedDeps := make([]string, 0, len(n.Deps))
 	for _, dep := range n.Deps {
 		dep = strings.TrimSpace(dep)
 		if dep == "" {
 			continue
 		}
+		mappedDep := e.mapSignalName(dep)
+		mappedDeps = append(mappedDeps, mappedDep)
 		if obj, ok := env.Get(dep); ok && isCompoundObject(obj) {
-			viewEnv.Set(dep, makePlaceholderObject(obj, dep))
+			viewEnv.Set(dep, makePlaceholderObject(obj, mappedDep))
 		} else {
-			viewEnv.Set(dep, &interpreter.String{Value: signalPlaceholder(dep)})
+			viewEnv.Set(dep, &interpreter.String{Value: signalPlaceholder(mappedDep)})
 		}
 	}
 	body, err := e.renderBody(n.Body, viewEnv, data, depth)
 	if err != nil {
 		return "", fmt.Errorf("@reactive: %w", err)
 	}
-	e.trackViewHTML(selector, compileHydrationHTML(body), n.Deps)
+	e.trackViewHTML(selector, compileHydrationHTML(body), mappedDeps)
 	return WrapReactiveView(initialBody, e.hydration.ViewID), nil
 }
 
@@ -1177,7 +1353,7 @@ func (e *Engine) renderClick(n *ClickNode, env *interpreter.Environment, data ma
 	if e.hydration == nil {
 		return fmt.Sprintf(`<button type="button">%s</button>`, html.EscapeString(n.Label)), nil
 	}
-	return WrapClickAction(html.EscapeString(n.Label), n.Signal, n.Action, n.Value), nil
+	return WrapClickAction(html.EscapeString(n.Label), e.mapSignalName(n.Signal), n.Action, n.Value), nil
 }
 
 // objectToString converts an SPL Object to its string representation for template output.
