@@ -36,6 +36,7 @@ var staticFS embed.FS
 type renderRequest struct {
 	Template string `json:"template"`
 	Data     string `json:"data"`
+	Schema   string `json:"schema"`
 }
 
 type renderResponse struct {
@@ -117,8 +118,8 @@ func builtinExamples() []map[string]any {
 			"label":    "Components: Basic",
 			"category": "Components",
 			"tags":     []string{"components", "render"},
-			"template": "@// Define reusable components with declared props\n@component(\"Badge\", label, color) {\n  <style>.badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; color: white; background: ${color | default \"#666\"}; }</style>\n  <span class=\"badge\">${label}</span>\n}\n\n@component(\"Card\", title, body, tag, tagColor) {\n  <style>.card { border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin: 8px 0; }</style>\n  <div class=\"card\">\n    <h3>${title} @render(\"Badge\", {\"label\": tag, \"color\": tagColor})</h3>\n    <p>${body}</p>\n  </div>\n}\n\n<h1>Component Demo</h1>\n@render(\"Card\", {\"title\": \"Getting Started\", \"body\": \"Install SPL and run your first script.\", \"tag\": \"New\", \"tagColor\": \"#22c55e\"})\n@render(\"Card\", {\"title\": \"Templates\", \"body\": \"Build dynamic HTML with SPL expressions.\", \"tag\": \"Guide\", \"tagColor\": \"#3b82f6\"})\n@render(\"Card\", {\"title\": \"Filters\", \"body\": \"Transform output with 25+ built-in filters.\", \"tag\": \"Popular\", \"tagColor\": \"#ef4444\"})",
-			"data":     `{}`,
+			"template": "@// Define reusable components with declared props\n@component(\"Badge\", label, color = '#666') {\n  <style>.badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; color: white; background: ${color}; }</style>\n  <span class=\"badge\">${label}</span>\n}\n\n@component(\"Card\", title, body, tag, tagColor) {\n  <style>.card { border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin: 8px 0; }</style>\n  <div class=\"card\">\n    <h3>${title} @render(\"Badge\", {\"label\": tag, \"color\": tagColor})</h3>\n    <p>${body}</p>\n  </div>\n}\n\n<h1>Component Demo</h1>\n@for (item in items) {\n  @render(\"Card\", item)\n}",
+			"data":     `{"items": [{"title": "Getting Started", "body": "Install SPL and run your first script.", "tag": "New", "tagColor": "#22c55e"}, {"title": "Templates", "body": "Build dynamic HTML with SPL expressions.", "tag": "Guide", "tagColor": "#3b82f6"}, {"title": "Filters", "body": "Transform output with 25+ built-in filters.", "tag": "Popular", "tagColor": "#ef4444"}]}`,
 		},
 		{
 			"name":     "component-slots",
@@ -973,6 +974,58 @@ input, select, textarea { width: 100%; box-sizing: border-box; border: 1px solid
 </div>`,
 			"data": `{}`,
 		},
+		{
+			"name":        "schema-contact",
+			"label":       "Schema-Driven Contact Form",
+			"category":    "Schema-Driven UI",
+			"description": "A contact form auto-generated from a JSON Schema definition. Uses @schema_form directive with validation attributes.",
+			"tags":        []string{"schema", "forms", "auto-ui"},
+			"schema": `{"contact":{"type":"object","title":"Contact Us","description":"Send us a message and we'll get back to you.","properties":{"name":{"type":"string","title":"Full Name","minLength":2,"maxLength":100,"description":"Your full name"},"email":{"type":"string","format":"email","title":"Email Address","description":"We'll never share your email"},"subject":{"type":"string","enum":["General Inquiry","Support","Feedback","Partnership"],"title":"Subject"},"message":{"type":"string","title":"Message","ui:widget":"textarea","ui:rows":6,"minLength":10,"description":"Tell us what's on your mind"},"subscribe":{"type":"boolean","title":"Subscribe to newsletter","description":"Get occasional updates about our product"}},"required":["name","email","message"]}}`,
+			"template": `<style>
+.schema-demo { font-family: ui-sans-serif, system-ui, sans-serif; max-width: 40rem; margin: 1rem auto; color: #172033; }
+.intro { margin-bottom: 1rem; }
+.intro h2 { margin: 0 0 0.25rem; }
+.intro p { color: #58677a; margin: 0; }
+.spl-schema-form { display: grid; gap: 1rem; }
+.spl-schema-field { display: grid; gap: 0.35rem; }
+.spl-schema-label { font-weight: 700; font-size: 0.9rem; }
+.spl-schema-required { color: #ef4444; }
+.spl-schema-desc { color: #58677a; font-size: 0.82rem; margin: 0; }
+.spl-schema-input { width: 100%; box-sizing: border-box; border: 1px solid #cbd5e1; border-radius: 8px; padding: 0.7rem 0.8rem; font: inherit; }
+.spl-schema-input:focus { outline: 2px solid #0891b2; outline-offset: -1px; }
+textarea.spl-schema-input { resize: vertical; }
+.spl-schema-field-checkbox .spl-schema-label-checkbox { display: flex; gap: 0.5rem; align-items: flex-start; font-weight: 700; font-size: 0.9rem; cursor: pointer; }
+.spl-schema-field-checkbox input { width: auto; margin-top: 0.25rem; }
+.spl-schema-title { margin: 0 0 0.25rem; }
+.spl-schema-description { color: #58677a; margin: 0 0 1rem; }
+.spl-schema-detail { display: grid; gap: 0.5rem; }
+.spl-schema-detail-row { display: flex; gap: 0.75rem; padding: 0.35rem 0; border-bottom: 1px solid #e2e8f0; }
+.spl-schema-detail-label { font-weight: 700; min-width: 8rem; color: #475569; }
+.spl-schema-detail-value { color: #172033; }
+.spl-schema-table { width: 100%; border-collapse: collapse; }
+.spl-schema-table th, .spl-schema-table td { padding: 0.6rem 0.75rem; border-bottom: 1px solid #e2e8f0; text-align: left; font-size: 0.9rem; }
+.spl-schema-table th { color: #58677a; font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.06em; }
+.spl-schema-empty { color: #9a3412; padding: 1rem; text-align: center; }
+</style>
+<div class="schema-demo">
+  <header class="intro">
+    <h2>Schema-Driven Contact Form</h2>
+    <p>This form is generated entirely from a JSON Schema definition using the schema_form directive. Input types, labels, validation, and layout derive from the schema.</p>
+  </header>
+
+  @schema_form("contact", contactData)
+
+  <hr style="margin: 2rem 0; border: none; border-top: 1px solid #e2e8f0;" />
+
+  <header class="intro">
+    <h2>Detail View</h2>
+    <p>Read-only display from the same schema using the schema_detail directive.</p>
+  </header>
+
+  @schema_detail("contact", contactData)
+</div>`,
+			"data": `{"contactData": {"name": "Alice Johnson", "email": "alice@example.com", "subject": "General Inquiry", "message": "I'd like to learn more about your services.", "subscribe": true}}`,
+		},
 	}
 }
 
@@ -1161,6 +1214,14 @@ func main() {
 			}
 		}
 
+		var userSchema map[string]any
+		if strings.TrimSpace(req.Schema) != "" {
+			if err := json.Unmarshal([]byte(req.Schema), &userSchema); err != nil {
+				writeJSON(w, http.StatusBadRequest, renderResponse{Error: "invalid schema JSON: " + err.Error(), ErrorKind: "validation"})
+				return
+			}
+		}
+
 		cwd, err := os.Getwd()
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to resolve working directory"})
@@ -1171,6 +1232,15 @@ func main() {
 		engine.BaseDir = cwd
 		engine.AutoEscape = true
 		engine.SecureMode = false
+		if userSchema != nil {
+			for name, schemaDef := range userSchema {
+				if schemaMap, ok := schemaDef.(map[string]any); ok {
+					if parsed, err := template.SchemaFromMap(schemaMap); err == nil {
+						engine.SchemaRegistry.Register(name, parsed)
+					}
+				}
+			}
+		}
 
 		renderStart := time.Now()
 		rendered, renderErr := engine.RenderSSR(req.Template, data)

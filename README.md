@@ -234,27 +234,45 @@ Patterns support: literals, type checks (`x: integer`), destructuring (`[a, b]`)
 
 ### Components & Slots
 
-#### Defining a component
+#### Basic example
 
-```
-@component("Card", heading, bg = "white", sectionLabel = "") {
-    <div class="card" style="background:${bg};">
-        @if(sectionLabel) { <div class="section-label">${sectionLabel}</div> }
-        @if(heading)      { <h3>${heading}</h3> }
-        @slot
-    </div>
+Define reusable components with declared props, compose them, and pass data via a variable:
+
+```spl
+@component("Badge", label, color = '#666') {
+  <style>.badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; color: white; background: ${color}; }</style>
+  <span class="badge">${label}</span>
+}
+
+@component("Card", title, body, tag, tagColor) {
+  <style>.card { border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin: 8px 0; }</style>
+  <div class="card">
+    <h3>${title} @render("Badge", {"label": tag, "color": tagColor})</h3>
+    <p>${body}</p>
+  </div>
+}
+
+<h1>Component Demo</h1>
+@for (item in items) {
+  @render("Card", item)
 }
 ```
 
-Components can be defined inline or in separate files loaded via `@import` or `RegisterComponent`.
+With data:
 
-#### Calling a component
-
-```
-@render("Card", {"heading": "User Profile", "bg": "#f0f9ff"}) {
-    <p>Name: ${user.name}</p>
+```json
+{
+  "items": [
+    {"title": "Getting Started", "body": "Install SPL and run your first script.", "tag": "New", "tagColor": "#22c55e"},
+    {"title": "Templates", "body": "Build dynamic HTML with SPL expressions.", "tag": "Guide", "tagColor": "#3b82f6"},
+    {"title": "Filters", "body": "Transform output with 25+ built-in filters.", "tag": "Popular", "tagColor": "#ef4444"}
+  ]
 }
 ```
+
+Components can be defined inline or in separate files loaded via `@import` or `RegisterComponent`. Declared props are matched by name from the passed hash or variable — no need to destructure.
+
+#### Named slots
 
 #### Named slots
 
@@ -287,6 +305,17 @@ Components can be defined inline or in separate files loaded via `@import` or `R
 @render("InfoCard", {"title": "Custom Card", "subtitle": "All props set", "color": "#ef4444"})
 @render("InfoCard", {"title": "Partial Props"})
 @render("InfoCard")       <!-- uses defaults -->
+```
+
+#### Optional props (`?`)
+
+Mark a prop as optional with `?` — when not passed, it resolves to `undefined` instead of throwing:
+
+```
+@component("Badge", label, ?color) {
+  <span>${label} - ${color}</span>
+}
+@render("Badge", {"label": "hello"})   <!-- color is undefined → renders as "" -->
 ```
 
 #### Registering components programmatically

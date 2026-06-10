@@ -128,11 +128,12 @@ type DefineNode struct {
 
 func (n *DefineNode) nodeType() string { return "define" }
 
-// PropDef describes a single declared prop with optional alias and default.
+// PropDef describes a single declared prop with optional alias, default, and ?-prefix optionality.
 type PropDef struct {
-	Name    string // external prop name (what the caller passes)
-	Alias   string // internal variable name ("" = same as Name)
-	Default string // SPL expression for default value ("" = none)
+	Name     string // external prop name (what the caller passes)
+	Alias    string // internal variable name ("" = same as Name)
+	Default  string // SPL expression for default value ("" = none)
+	Optional bool   // true when declared as ?name (NULL if not passed)
 }
 
 // ComponentNode defines a reusable component.
@@ -191,6 +192,30 @@ type WatchNode struct {
 }
 
 func (n *WatchNode) nodeType() string { return "watch" }
+
+// SchemaFormNode renders a form from a registered JSON schema.
+type SchemaFormNode struct {
+	SchemaName string // name of the registered schema
+	DataExpr   string // SPL expression resolving to data hash
+}
+
+func (n *SchemaFormNode) nodeType() string { return "schema_form" }
+
+// SchemaDetailNode renders a detail view from a registered JSON schema.
+type SchemaDetailNode struct {
+	SchemaName string
+	DataExpr   string
+}
+
+func (n *SchemaDetailNode) nodeType() string { return "schema_detail" }
+
+// SchemaTableNode renders a table from a registered JSON schema.
+type SchemaTableNode struct {
+	SchemaName string
+	ItemsExpr  string
+}
+
+func (n *SchemaTableNode) nodeType() string { return "schema_table" }
 
 // --- Parser ---
 
@@ -550,6 +575,30 @@ func (p *parser) parseNodes(inBlock bool) ([]Node, error) {
 			case "lazy":
 				flushText()
 				node, err := p.parseLazy()
+				if err != nil {
+					return nil, err
+				}
+				nodes = append(nodes, node)
+				continue
+			case "schema_form":
+				flushText()
+				node, err := p.parseSchemaForm()
+				if err != nil {
+					return nil, err
+				}
+				nodes = append(nodes, node)
+				continue
+			case "schema_detail":
+				flushText()
+				node, err := p.parseSchemaDetail()
+				if err != nil {
+					return nil, err
+				}
+				nodes = append(nodes, node)
+				continue
+			case "schema_table":
+				flushText()
+				node, err := p.parseSchemaTable()
 				if err != nil {
 					return nil, err
 				}
@@ -1349,7 +1398,8 @@ func (p *parser) parseComponent() (*ComponentNode, error) {
 	return &ComponentNode{Name: name, Props: props, Body: body}, nil
 }
 
-// parsePropDef parses a single prop definition token: "name", "name as alias", "name = default", "name as alias = default"
+// parsePropDef parses a single prop definition token: "name", "name as alias", "name = default", "name as alias = default",
+// with optional "?" prefix marking the prop as optional (NULL when not passed).
 func parsePropDef(token string) (PropDef, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {
@@ -1357,6 +1407,12 @@ func parsePropDef(token string) (PropDef, error) {
 	}
 
 	pd := PropDef{}
+
+	// Check for optional "?" prefix
+	if strings.HasPrefix(token, "?") {
+		pd.Optional = true
+		token = strings.TrimSpace(token[1:])
+	}
 
 	// Split on first assignment '=' to separate name/alias from default
 	eqIdx := findFirstAssignEquals(token)
@@ -1811,4 +1867,61 @@ func unquote(s string) string {
 		}
 	}
 	return s
+}
+
+// parseSchemaForm parses @schema_form("schemaName", dataExpr)
+func (p *parser) parseSchemaForm() (*SchemaFormNode, error) {
+	p.advanceN(12) // skip '@schema_form'
+	inner, err := p.readParenExpr()
+	if err != nil {
+		return nil, p.errorf("@schema_form: %w", err)
+	}
+	parts := splitCaseValues(inner)
+	if len(parts) < 1 {
+		return nil, p.errorf("@schema_form: schema name is required")
+	}
+	name := unquote(strings.TrimSpace(parts[0]))
+	node := &SchemaFormNode{SchemaName: name}
+	if len(parts) > 1 {
+		node.DataExpr = strings.TrimSpace(parts[1])
+	}
+	return node, nil
+}
+
+// parseSchemaDetail parses @schema_detail("schemaName", dataExpr)
+func (p *parser) parseSchemaDetail() (*SchemaDetailNode, error) {
+	p.advanceN(14) // skip '@schema_detail'
+	inner, err := p.readParenExpr()
+	if err != nil {
+		return nil, p.errorf("@schema_detail: %w", err)
+	}
+	parts := splitCaseValues(inner)
+	if len(parts) < 1 {
+		return nil, p.errorf("@schema_detail: schema name is required")
+	}
+	name := unquote(strings.TrimSpace(parts[0]))
+	node := &SchemaDetailNode{SchemaName: name}
+	if len(parts) > 1 {
+		node.DataExpr = strings.TrimSpace(parts[1])
+	}
+	return node, nil
+}
+
+// parseSchemaTable parses @schema_table("schemaName", itemsExpr)
+func (p *parser) parseSchemaTable() (*SchemaTableNode, error) {
+	p.advanceN(13) // skip '@schema_table'
+	inner, err := p.readParenExpr()
+	if err != nil {
+		return nil, p.errorf("@schema_table: %w", err)
+	}
+	parts := splitCaseValues(inner)
+	if len(parts) < 1 {
+		return nil, p.errorf("@schema_table: schema name is required")
+	}
+	name := unquote(strings.TrimSpace(parts[0]))
+	node := &SchemaTableNode{SchemaName: name}
+	if len(parts) > 1 {
+		node.ItemsExpr = strings.TrimSpace(parts[1])
+	}
+	return node, nil
 }

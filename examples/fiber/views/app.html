@@ -219,6 +219,16 @@
     @switch(status){@case("pending"){<span class="badge" style="background:#f59e0b;color:white;">Pending</span>}@case("shipped","in_transit"){<span class="badge" style="background:#3b82f6;color:white;">In Transit</span>}@case("delivered"){<span class="badge" style="background:#22c55e;color:white;">Delivered</span>}@default{<span class="badge">Unknown</span>}}
   }
 
+  @// @watch — change detection
+  @render("Card",{"heading":"@watch","sectionLabel":"Change Detection (Group List)"}) {
+    @let(team = [{"dept":"Engineering","name":"Alice"},{"dept":"Engineering","name":"Bob"},{"dept":"Design","name":"Carol"},{"dept":"Design","name":"Dave"},{"dept":"QA","name":"Eve"}])
+    <p style="font-size:0.8rem;color:#64748b;margin-bottom:0.5rem;">${"@"}watch renders only when the watched value changes — ideal for group headers in sorted lists:</p>
+    @for(m in team) {
+      @watch(m.dept) { <div style="font-size:0.7rem;font-weight:700;color:#3b82f6;text-transform:uppercase;letter-spacing:0.08em;margin:0.5rem 0 0.25rem;padding:0.15rem 0.4rem;background:#eff6ff;border-radius:4px;">${m.dept}</div> }
+      <span style="display:inline-block;padding:0.2rem 0.6rem;background:#f8fafc;border-radius:4px;margin:0.1rem;font-size:0.85rem;">${m.name}</span>
+    }
+  }
+
   @// @for with @empty
   @render("Card",{"heading":"@for with @empty","sectionLabel":"Loop Fallback"}) {
     <strong>Items:</strong>

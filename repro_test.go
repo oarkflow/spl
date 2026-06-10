@@ -33,14 +33,116 @@ func TestReproExactTemplate1(t *testing.T) {
 	if !strings.Contains(out, "Getting Started") {
 		t.Fatalf("expected 'Getting Started' in output, got %q", out)
 	}
-	if !strings.Contains(out, `<span class="badge">New</span>`) {
+	if !strings.Contains(out, `">New</span>`) {
 		t.Fatalf("expected Badge rendered, got %q", out)
 	}
-	if !strings.Contains(out, `<span class="badge">Guide</span>`) {
+	if !strings.Contains(out, `">Guide</span>`) {
 		t.Fatalf("expected Badge 'Guide' rendered, got %q", out)
 	}
-	if !strings.Contains(out, `<span class="badge">Popular</span>`) {
+	if !strings.Contains(out, `">Popular</span>`) {
 		t.Fatalf("expected Badge 'Popular' rendered, got %q", out)
+	}
+	if got := strings.Count(out, `.card { border: 1px solid #ddd;`); got != 1 {
+		t.Fatalf("expected duplicate Card CSS to render once, got %d occurrences in %q", got, out)
+	}
+	if got := strings.Count(out, `.badge--spl-`); got != 3 {
+		t.Fatalf("expected 3 Badge style instances (different backgrounds), got %d in %q", got, out)
+	}
+}
+
+func TestComponentAssetsDeduplicateIdenticalStyleScriptAndLink(t *testing.T) {
+	e := New()
+	tmpl := `@component("Widget", label) {
+  <link rel="stylesheet" href="/widget.css">
+  <style>.widget { color: red; }</style>
+  <script>function bootWidget(){ return true; }</script>
+  <div class="widget">${label}</div>
+}
+@render("Widget", {"label": "One"})
+@render("Widget", {"label": "Two"})
+@render("Widget", {"label": "Three"})`
+
+	out, err := e.Render(tmpl, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := strings.Count(out, `<link rel="stylesheet" href="/widget.css">`); got != 1 {
+		t.Fatalf("expected duplicate link to render once, got %d in %q", got, out)
+	}
+	if got := strings.Count(out, `<style>.widget { color: red; }</style>`); got != 1 {
+		t.Fatalf("expected duplicate style to render once, got %d in %q", got, out)
+	}
+	if got := strings.Count(out, `<script>function bootWidget(){ return true; }</script>`); got != 1 {
+		t.Fatalf("expected duplicate script to render once, got %d in %q", got, out)
+	}
+}
+
+func TestComponentAssetsUniqueStyleScopesSelectors(t *testing.T) {
+	e := New()
+	tmpl := `@component("Badge", label, color) {
+  <style data-spl-unique="true">.badge { color: white; background: ${color}; } #badgeRoot { display: inline-block; } .asset { background-image: url("https://cdn.example.com/badge.svg#icon"); content: ".badge #badgeRoot"; }</style>
+  <span id="badgeRoot" class="badge">${label}</span>
+}
+@render("Badge", {"label": "New", "color": "#22c55e"})
+@render("Badge", {"label": "Hot", "color": "#ef4444"})`
+
+	out, err := e.Render(tmpl, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := strings.Count(out, `data-spl-unique="true"`); got != 2 {
+		t.Fatalf("expected unique style per render, got %d in %q", got, out)
+	}
+	for _, want := range []string{
+		`.badge--spl-u-1 { color: white; background: #22c55e; }`,
+		`.badge--spl-u-2 { color: white; background: #ef4444; }`,
+		`id="badgeRoot--spl-u-1" class="badge--spl-u-1"`,
+		`id="badgeRoot--spl-u-2" class="badge--spl-u-2"`,
+		`https://cdn.example.com/badge.svg#icon`,
+		`content: ".badge #badgeRoot"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected scoped unique asset output to contain %q, got %q", want, out)
+		}
+	}
+}
+
+func TestComponentAssetsDoNotDedupeDataScripts(t *testing.T) {
+	e := New()
+	tmpl := `@component("Payload", name) {
+  <script type="application/json">{"name":"${name}"}</script>
+  <div>${name}</div>
+}
+@render("Payload", {"name": "One"})
+@render("Payload", {"name": "One"})`
+
+	out, err := e.Render(tmpl, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := strings.Count(out, `<script type="application/json">{"name":"One"}</script>`); got != 2 {
+		t.Fatalf("expected data scripts to be preserved, got %d in %q", got, out)
+	}
+}
+
+func TestComponentAssetsUniqueScriptIsIsolated(t *testing.T) {
+	e := New()
+	tmpl := `@component("Widget") {
+  <script data-spl-unique="true">var mounted = true; function boot(){ return mounted; }</script>
+  <div>Widget</div>
+}
+@render("Widget")
+@render("Widget")`
+
+	out, err := e.Render(tmpl, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := strings.Count(out, `(function(){`); got != 2 {
+		t.Fatalf("expected each unique script to be isolated, got %d wrappers in %q", got, out)
+	}
+	if !strings.Contains(out, `const SPL_UNIQUE_SCOPE = "spl-u-1";`) || !strings.Contains(out, `const SPL_UNIQUE_SCOPE = "spl-u-2";`) {
+		t.Fatalf("expected unique script scopes in %q", out)
 	}
 }
 

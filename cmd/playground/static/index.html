@@ -80,16 +80,15 @@
               <button id="runBtn" class="px-4 py-1.5 text-sm rounded-md bg-brand text-white hover:bg-cyan-700 transition">Run</button>
             </div>
           </div>
-          <div class="w-full flex-1 min-h-0 flex flex-row">
-            <div class="flex-1 min-w-0 flex flex-col" style="flex-basis:60%">
-              <div class="px-3 py-1 text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/40 shrink-0">Template</div>
-              <div id="templateEditor" class="w-full flex-1 min-h-0"></div>
-            </div>
-            <div class="w-px bg-slate-300 dark:bg-slate-700 shrink-0"></div>
-            <div class="flex-1 min-w-0 flex flex-col" style="flex-basis:40%">
-              <div class="px-3 py-1 text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/40 shrink-0">Data (JSON)</div>
-              <div id="dataEditor" class="w-full flex-1 min-h-0"></div>
-            </div>
+          <div class="px-3 py-1 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/40 flex items-center gap-1 shrink-0">
+            <button data-editor-tab="template" class="editor-tab-btn px-3 py-1 text-xs rounded-md bg-white dark:bg-slate-800 shadow-sm font-medium">Template</button>
+            <button data-editor-tab="data" class="editor-tab-btn px-3 py-1 text-xs rounded-md hover:bg-white dark:hover:bg-slate-800">Data (JSON)</button>
+            <button data-editor-tab="schema" class="editor-tab-btn px-3 py-1 text-xs rounded-md hover:bg-white dark:hover:bg-slate-800">Schema (JSON)</button>
+          </div>
+          <div class="w-full flex-1 min-h-0 relative">
+            <div id="templateEditor" class="editor-panel absolute inset-0"></div>
+            <div id="dataEditor" class="editor-panel absolute inset-0 hidden"></div>
+            <div id="schemaEditor" class="editor-panel absolute inset-0 hidden"></div>
           </div>
         </div>
 

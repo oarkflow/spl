@@ -1,5 +1,6 @@
 const templateEditorRoot = document.getElementById('templateEditor');
 const dataEditorRoot = document.getElementById('dataEditor');
+const schemaEditorRoot = document.getElementById('schemaEditor');
 const runBtn = document.getElementById('runBtn');
 const copyBtn = document.getElementById('copyBtn');
 const resetBtn = document.getElementById('resetBtn');
@@ -14,14 +15,18 @@ const exampleList = document.getElementById('exampleList');
 const exampleSearch = document.getElementById('exampleSearch');
 const tabButtons = Array.from(document.querySelectorAll('.tab-btn'));
 const panels = Array.from(document.querySelectorAll('.panel'));
+const editorTabBtns = Array.from(document.querySelectorAll('.editor-tab-btn'));
+const editorPanels = Array.from(document.querySelectorAll('.editor-panel'));
 
 const TEMPLATE_KEY = 'spl.template.playground.template';
 const DATA_KEY = 'spl.template.playground.data';
+const SCHEMA_KEY = 'spl.template.playground.schema';
 const THEME_KEY = 'spl.template.playground.theme';
 
 let templateExamples = [];
 let templateMonaco = null;
 let dataMonaco = null;
+let schemaMonaco = null;
 
 function escapeHTML(value) {
   return String(value || '')
@@ -48,6 +53,14 @@ function getDataValue() {
 
 function setDataValue(value) {
   if (dataMonaco) dataMonaco.setValue(value || '');
+}
+
+function getSchemaValue() {
+  return schemaMonaco ? schemaMonaco.getValue() : '';
+}
+
+function setSchemaValue(value) {
+  if (schemaMonaco) schemaMonaco.setValue(value || '');
 }
 
 // --- UI state ---
@@ -85,16 +98,35 @@ function setTab(tab) {
   }
 }
 
+function setEditorTab(tab) {
+  for (const btn of editorTabBtns) {
+    if (btn.dataset.editorTab === tab) {
+      btn.classList.add('bg-white', 'dark:bg-slate-800', 'shadow-sm');
+    } else {
+      btn.classList.remove('bg-white', 'dark:bg-slate-800', 'shadow-sm');
+    }
+  }
+  for (const panel of editorPanels) {
+    panel.classList.toggle('hidden', panel.id.replace('Editor', '') !== tab);
+  }
+  // Refresh layout so Monaco resizes correctly
+  if (tab === 'template' && templateMonaco) templateMonaco.layout();
+  if (tab === 'data' && dataMonaco) dataMonaco.layout();
+  if (tab === 'schema' && schemaMonaco) schemaMonaco.layout();
+}
+
 // --- Persistence ---
 
 function persistTemplate() {
   localStorage.setItem(TEMPLATE_KEY, getTemplateValue());
   localStorage.setItem(DATA_KEY, getDataValue());
+  localStorage.setItem(SCHEMA_KEY, getSchemaValue());
 }
 
 function restoreTemplate() {
   const tmpl = localStorage.getItem(TEMPLATE_KEY);
   const data = localStorage.getItem(DATA_KEY);
+  const schema = localStorage.getItem(SCHEMA_KEY);
   let restored = false;
   if (tmpl && tmpl.trim()) {
     setTemplateValue(tmpl);
@@ -103,6 +135,9 @@ function restoreTemplate() {
   if (data && data.trim()) {
     setDataValue(data);
     restored = true;
+  }
+  if (schema && schema.trim()) {
+    setSchemaValue(schema);
   }
   return restored;
 }
@@ -144,10 +179,21 @@ async function runTemplate() {
   setStatus('running', 'Rendering');
   errorEl.textContent = '';
   try {
+    const body = { template: getTemplateValue(), data: getDataValue() };
+    const schemaVal = getSchemaValue().trim();
+    if (schemaVal) {
+      try {
+        JSON.parse(schemaVal);
+        body.schema = schemaVal;
+      } catch (e) {
+        // send invalid JSON anyway; server will return a clear error
+        body.schema = schemaVal;
+      }
+    }
     const res = await fetch('/api/render', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ template: getTemplateValue(), data: getDataValue() }),
+      body: JSON.stringify(body),
     });
     const payload = await res.json();
     applyResponse(payload);
@@ -217,6 +263,16 @@ function renderExamples(filter = '') {
       } catch {
         setDataValue(ex.data || '{}');
       }
+      if (ex.schema) {
+        try {
+          const parsed = JSON.parse(ex.schema);
+          setSchemaValue(JSON.stringify(parsed, null, 2));
+        } catch {
+          setSchemaValue(ex.schema || '');
+        }
+      } else {
+        setSchemaValue('');
+      }
       persistTemplate();
       clearPanels();
     });
@@ -257,6 +313,13 @@ async function loadExamples() {
           setDataValue(JSON.stringify(JSON.parse(first.data || '{}'), null, 2));
         } catch {
           setDataValue(first.data || '{}');
+        }
+        if (first.schema) {
+          try {
+            setSchemaValue(JSON.stringify(JSON.parse(first.schema), null, 2));
+          } catch {
+            setSchemaValue(first.schema || '');
+          }
         }
         persistTemplate();
       }
@@ -331,6 +394,14 @@ function initMonaco() {
       dataMonaco.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => runBtn.click());
       dataMonaco.onDidChangeModelContent(() => persistTemplate());
 
+      schemaMonaco = monaco.editor.create(schemaEditorRoot, {
+        ...editorDefaults,
+        value: '',
+        language: 'json',
+      });
+      schemaMonaco.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => runBtn.click());
+      schemaMonaco.onDidChangeModelContent(() => persistTemplate());
+
       resolve();
     });
   });
@@ -346,8 +417,10 @@ copyBtn.addEventListener('click', async () => {
 resetBtn.addEventListener('click', () => {
   localStorage.removeItem(TEMPLATE_KEY);
   localStorage.removeItem(DATA_KEY);
+  localStorage.removeItem(SCHEMA_KEY);
   setTemplateValue('');
   setDataValue('{}');
+  setSchemaValue('');
   clearPanels();
 });
 themeBtn.addEventListener('click', () => {
@@ -358,6 +431,9 @@ exampleSearch.addEventListener('input', () => renderExamples(exampleSearch.value
 for (const btn of tabButtons) {
   btn.addEventListener('click', () => setTab(btn.dataset.tab));
 }
+for (const btn of editorTabBtns) {
+  btn.addEventListener('click', () => setEditorTab(btn.dataset.editorTab));
+}
 
 // --- Boot ---
 
@@ -365,6 +441,7 @@ async function boot() {
   initTheme();
   setStatus('idle', 'Idle');
   setTab('preview');
+  setEditorTab('template');
   clearPanels();
   try {
     await initMonaco();

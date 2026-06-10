@@ -115,7 +115,13 @@ func (e *Engine) renderNodes(nodes []Node, data map[string]any, depth int) (stri
 				defines[v.Name] = v.Body
 			case *ComponentNode:
 				e.mu.Lock()
-				e.Components[v.Name] = componentDef{Body: v.Body, Props: v.Props}
+				def := e.Components[v.Name]
+				def.Body = v.Body
+				def.Props = v.Props
+				if !def.HasDynamicCSS {
+					def.HasDynamicCSS = bodyHasDynamicCSS(v.Body)
+				}
+				e.Components[v.Name] = def
 				e.mu.Unlock()
 			default:
 				regularNodes = append(regularNodes, n)
@@ -338,6 +344,15 @@ func (e *Engine) renderNode(n Node, env *interpreter.Environment, data map[strin
 			return e.renderBody(v.Fallback, env, data, depth)
 		}
 		return "", nil
+
+	case *SchemaFormNode:
+		return e.renderSchemaForm(v, env)
+
+	case *SchemaDetailNode:
+		return e.renderSchemaDetail(v, env)
+
+	case *SchemaTableNode:
+		return e.renderSchemaTable(v, env)
 
 	default:
 		return "", fmt.Errorf("unknown node type: %T", n)
@@ -883,6 +898,9 @@ func (e *Engine) renderRender(n *RenderNode, env *interpreter.Environment, data 
 					// Add default to props hash so props.xxx reflects it
 					propsHash.Pairs[hk] = interpreter.HashPair{Key: key, Value: obj}
 					needsPropsRebuild = true
+				} else if pd.Optional {
+					compEnv.Set(varName, interpreter.NULL)
+					propsHash.Pairs[hk] = interpreter.HashPair{Key: key, Value: interpreter.NULL}
 				}
 			}
 			_ = needsPropsRebuild // props hash was modified in-place
@@ -901,25 +919,30 @@ func (e *Engine) renderRender(n *RenderNode, env *interpreter.Environment, data 
 						return "", fmt.Errorf("@component %q prop %q default: %w", n.Name, pd.Name, err)
 					}
 					compEnv.Set(varName, obj)
+				} else if pd.Optional {
+					compEnv.Set(varName, interpreter.NULL)
 				}
 			}
 			// Keep lazyHash as props — fastDotAccess handles it for props.field access
 		} else {
-			// No props passed — build a hash with just defaults
+			// No props passed — build a hash with just defaults and NULLs
 			pairs := make(map[interpreter.HashKey]interpreter.HashPair)
 			for _, pd := range comp.Props {
+				varName := pd.Name
+				if pd.Alias != "" {
+					varName = pd.Alias
+				}
+				key := &interpreter.String{Value: pd.Name}
 				if pd.Default != "" {
-					varName := pd.Name
-					if pd.Alias != "" {
-						varName = pd.Alias
-					}
 					obj, err := e.evalExpr(pd.Default, env)
 					if err != nil {
 						return "", fmt.Errorf("@component %q prop %q default: %w", n.Name, pd.Name, err)
 					}
 					compEnv.Set(varName, obj)
-					key := &interpreter.String{Value: pd.Name}
 					pairs[key.HashKey()] = interpreter.HashPair{Key: key, Value: obj}
+				} else if pd.Optional {
+					compEnv.Set(varName, interpreter.NULL)
+					pairs[key.HashKey()] = interpreter.HashPair{Key: key, Value: interpreter.NULL}
 				}
 			}
 			propsObj = &interpreter.Hash{Pairs: pairs}
@@ -952,7 +975,40 @@ func (e *Engine) renderRender(n *RenderNode, env *interpreter.Environment, data 
 	e.pushSlotContext(&slotContext{fills: fills, children: childrenStr})
 	defer e.popSlotContext()
 
-	return e.renderBody(comp.Body, compEnv, data, depth+1)
+	out, err := e.renderBody(comp.Body, compEnv, data, depth+1)
+	if err != nil {
+		return "", fmt.Errorf("@render %q: %w", n.Name, err)
+	}
+	if hasUnscoedUniqueAssetTags(out) {
+		out = e.scopeUniqueComponentAssets(out)
+	} else if comp.HasDynamicCSS {
+		out = e.scopeComponentAssets(out)
+	}
+
+	return out, nil
+}
+
+func hasUnscoedUniqueAssetTags(html string) bool {
+	lower := strings.ToLower(html)
+	for _, prefix := range []string{"<style", "<script"} {
+		for s := 0; s < len(lower); {
+			i := strings.Index(lower[s:], prefix)
+			if i < 0 {
+				break
+			}
+			s += i
+			close := strings.IndexByte(lower[s:], '>')
+			if close < 0 {
+				break
+			}
+			attrs := lower[s+len(prefix) : s+close]
+			if strings.Contains(attrs, "data-spl-unique") && !strings.Contains(attrs, "data-spl-scope") {
+				return true
+			}
+			s += close + 1
+		}
+	}
+	return false
 }
 
 func (e *Engine) renderSlot(n *SlotNode) (string, error) {
@@ -1281,4 +1337,87 @@ func nativeToObject(v any) interpreter.Object {
 		// structs, typed slices, typed maps, and all Go types via reflection.
 		return interpreter.ToObject(v)
 	}
+}
+
+// objectToMap converts an interpreter.Object to a map[string]any.
+func objectToMap(obj interpreter.Object) map[string]any {
+	if obj == nil || obj.Type() == interpreter.NULL_OBJ {
+		return nil
+	}
+	switch v := obj.(type) {
+	case *interpreter.Hash:
+		result := make(map[string]any, len(v.Pairs))
+		for _, pair := range v.Pairs {
+			key := pair.Key.Inspect()
+			result[key] = objectToNative(pair.Value)
+		}
+		return result
+	case *lazyHash:
+		return v.data
+	default:
+		return nil
+	}
+}
+
+// renderSchemaForm renders a @schema_form node.
+func (e *Engine) renderSchemaForm(n *SchemaFormNode, env *interpreter.Environment) (string, error) {
+	schema, ok := e.SchemaRegistry.Get(n.SchemaName)
+	if !ok {
+		return "", fmt.Errorf("schema not found: %s", n.SchemaName)
+	}
+	var data map[string]any
+	if n.DataExpr != "" {
+		obj, err := e.evalExpr(n.DataExpr, env)
+		if err != nil {
+			return "", fmt.Errorf("@schema_form data: %w", err)
+		}
+		data = objectToMap(obj)
+	}
+	if data == nil {
+		data = make(map[string]any)
+	}
+	return schema.RenderFormHTML(n.SchemaName, data), nil
+}
+
+// renderSchemaDetail renders a @schema_detail node.
+func (e *Engine) renderSchemaDetail(n *SchemaDetailNode, env *interpreter.Environment) (string, error) {
+	schema, ok := e.SchemaRegistry.Get(n.SchemaName)
+	if !ok {
+		return "", fmt.Errorf("schema not found: %s", n.SchemaName)
+	}
+	var data map[string]any
+	if n.DataExpr != "" {
+		obj, err := e.evalExpr(n.DataExpr, env)
+		if err != nil {
+			return "", fmt.Errorf("@schema_detail data: %w", err)
+		}
+		data = objectToMap(obj)
+	}
+	if data == nil {
+		data = make(map[string]any)
+	}
+	return schema.RenderDetailHTML(n.SchemaName, data), nil
+}
+
+// renderSchemaTable renders a @schema_table node.
+func (e *Engine) renderSchemaTable(n *SchemaTableNode, env *interpreter.Environment) (string, error) {
+	schema, ok := e.SchemaRegistry.Get(n.SchemaName)
+	if !ok {
+		return "", fmt.Errorf("schema not found: %s", n.SchemaName)
+	}
+	var items []map[string]any
+	if n.ItemsExpr != "" {
+		obj, err := e.evalExpr(n.ItemsExpr, env)
+		if err != nil {
+			return "", fmt.Errorf("@schema_table items: %w", err)
+		}
+		if arr, ok := obj.(*interpreter.Array); ok {
+			for _, elem := range arr.Elements {
+				if m := objectToMap(elem); m != nil {
+					items = append(items, m)
+				}
+			}
+		}
+	}
+	return schema.RenderTableHTML(items), nil
 }

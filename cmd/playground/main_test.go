@@ -28,9 +28,26 @@ func TestBuiltinExamplesRender(t *testing.T) {
 			}
 		}
 
+		schemaText, _ := ex["schema"].(string)
+
 		engine := template.New()
 		engine.AutoEscape = true
 		engine.SecureMode = false
+
+		if strings.TrimSpace(schemaText) != "" {
+			var schemas map[string]any
+			if err := json.Unmarshal([]byte(schemaText), &schemas); err != nil {
+				t.Fatalf("%s: invalid schema JSON: %v", name, err)
+			}
+			for name, schemaDef := range schemas {
+				if schemaMap, ok := schemaDef.(map[string]any); ok {
+					if parsed, err := template.SchemaFromMap(schemaMap); err == nil {
+						engine.SchemaRegistry.Register(name, parsed)
+					}
+				}
+			}
+		}
+
 		out, err := engine.RenderSSR(tmpl, data)
 		if err != nil {
 			t.Fatalf("%s: render failed: %v", name, err)

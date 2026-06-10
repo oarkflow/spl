@@ -87,8 +87,9 @@ type exprFastPath struct {
 
 // componentDef holds a registered component's body and declared props.
 type componentDef struct {
-	Body  []Node
-	Props []PropDef // declared prop definitions (may be empty)
+	Body          []Node
+	Props         []PropDef // declared prop definitions (may be empty)
+	HasDynamicCSS bool     // true when <style> contains template expressions
 }
 
 type compiledTemplate struct {
@@ -127,6 +128,7 @@ type Engine struct {
 	baseEnv             *interpreter.Environment // base environment for the current render call
 	globalEnv           *interpreter.Environment // cached global environment (created once)
 	hydration           *hydrationState          // SSR hydration state for the current render call
+	assetScopeSeq       int                      // per-render sequence for data-spl-unique assets
 	HydrationRuntimeURL string                   // if set, emit <script src="..."> instead of inlining runtime
 	CSPNonce            string                   // optional nonce applied to executable hydration script tags
 	SecureMode          bool                     // enforce CSP-safe, non-eval hydration output (default: false)
@@ -136,6 +138,9 @@ type Engine struct {
 
 	// Fast-path expression metadata cache
 	exprMeta map[string]exprFastPath // expression string → fast-path info
+
+	// Schema-driven UI generation
+	SchemaRegistry *SchemaRegistry
 }
 
 // New creates a new Engine with sensible defaults.
@@ -155,6 +160,7 @@ func New() *Engine {
 		compiledTextCache: make(map[string]*compiledTemplate),
 		SecureMode:        false,
 		mu:                &sync.RWMutex{},
+		SchemaRegistry:    NewSchemaRegistry(),
 	}
 	cacheRegistry.mu.Lock()
 	cacheRegistry.engines = append(cacheRegistry.engines, e)
@@ -178,7 +184,7 @@ func (e *Engine) RegisterComponent(name string, body string) error {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.Components[name] = componentDef{Body: nodes}
+	e.Components[name] = componentDef{Body: nodes, HasDynamicCSS: bodyHasDynamicCSS(nodes)}
 	return nil
 }
 
@@ -332,6 +338,7 @@ func (e *Engine) cloneForRender(state *hydrationState, components map[string]com
 	cloned.watchState = nil // lazy-init in renderWatch
 	cloned.baseEnv = interpreter.NewEnclosedEnvironment(globalEnv)
 	cloned.hydration = state
+	cloned.assetScopeSeq = 0
 	return &cloned
 }
 
@@ -397,12 +404,38 @@ func (e *Engine) compileFileTemplate(resolved string) (*compiledTemplate, error)
 	return ct, nil
 }
 
+func bodyHasDynamicCSS(body []Node) bool {
+	var sb strings.Builder
+	for _, n := range body {
+		switch v := n.(type) {
+		case *TextNode:
+			sb.WriteString(v.Text)
+		case *ExprNode:
+			sb.WriteString("${")
+			sb.WriteString(v.Expr)
+			sb.WriteString("}")
+		}
+	}
+	raw := sb.String()
+	lower := strings.ToLower(raw)
+	start := strings.Index(lower, "<style")
+	if start < 0 {
+		return false
+	}
+	closeTag := strings.Index(raw[start:], "</style>")
+	if closeTag < 0 {
+		return false
+	}
+	section := raw[start : start+closeTag+8]
+	return strings.Contains(section, "${")
+}
+
 func (e *Engine) buildCompiledTemplate(nodes []Node) *compiledTemplate {
 	components := make(map[string]componentDef)
 	imports := make([]string, 0)
 	for _, n := range nodes {
 		if c, ok := n.(*ComponentNode); ok {
-			components[c.Name] = componentDef{Body: c.Body, Props: c.Props}
+			components[c.Name] = componentDef{Body: c.Body, Props: c.Props, HasDynamicCSS: bodyHasDynamicCSS(c.Body)}
 			continue
 		}
 		if imp, ok := n.(*ImportNode); ok {
@@ -448,7 +481,12 @@ func (e *Engine) renderCompiled(ct *compiledTemplate, data map[string]any, state
 	cloned.watchState = nil // lazy-init on first use
 	cloned.baseEnv = interpreter.NewEnclosedEnvironment(globalEnv)
 	cloned.hydration = state
-	return (&cloned).renderNodes(ct.Nodes, data, 0)
+	cloned.assetScopeSeq = 0
+	out, err := (&cloned).renderNodes(ct.Nodes, data, 0)
+	if err != nil {
+		return "", err
+	}
+	return optimizeRenderedAssets(out), nil
 }
 
 func (e *Engine) registerImportedComponents(imports []string, components map[string]componentDef, seen map[string]struct{}) error {

@@ -95,6 +95,9 @@ func (sr *StreamRenderer) RenderStreamNodes(w io.Writer, nodes []Node) error {
 				if err != nil {
 					fallback = "Loading..."
 				}
+				if secErr := renderer.ensureSecureRenderedHTML(fallback); secErr != nil {
+					return secErr
+				}
 				fmt.Fprintf(&mainContent, `<div id="%s">%s</div>`, id, fallback)
 			} else {
 				fmt.Fprintf(&mainContent, `<div id="%s"><span class="spl-loading">Loading...</span></div>`, id)
@@ -153,10 +156,10 @@ func (sr *StreamRenderer) RenderStreamNodes(w io.Writer, nodes []Node) error {
 				deferRenderer := sr.engine.cloneForRender(nil, cloneComponentDefs(renderer.Components))
 				content, err := deferRenderer.renderNodes(def.Body, sr.data, 0)
 				if err != nil {
-					content = fmt.Sprintf(`<span class="spl-error">Error: %s</span>`, err.Error())
+					content = fmt.Sprintf(`<span class="spl-error">Error: %s</span>`, html.EscapeString(err.Error()))
 				}
 				if secErr := deferRenderer.ensureSecureRenderedHTML(content); secErr != nil {
-					content = fmt.Sprintf(`<span class="spl-error">Error: %s</span>`, secErr.Error())
+					content = fmt.Sprintf(`<span class="spl-error">Error: %s</span>`, html.EscapeString(secErr.Error()))
 				}
 				script := fmt.Sprintf(
 					`<script%s>document.getElementById('%s').innerHTML=%s;</script>`,

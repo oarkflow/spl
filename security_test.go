@@ -187,6 +187,46 @@ func TestSecurityRejectsActiveHTMLInSecureMode(t *testing.T) {
 	}
 }
 
+func TestSecurityRejectsEntityEncodedJavaScriptURLInSecureMode(t *testing.T) {
+	e := New()
+	e.SecureMode = true
+
+	_, err := e.Render(`<a href="java&#x73;cript:alert(1)">x</a>`, nil)
+	if err == nil {
+		t.Fatal("expected entity-encoded javascript URL to be rejected")
+	}
+	if !strings.Contains(err.Error(), "javascript: URLs are not allowed") {
+		t.Fatalf("expected javascript URL rejection, got %v", err)
+	}
+}
+
+func TestSecurityRejectsInnerHTMLBindingInSecureMode(t *testing.T) {
+	e := New()
+	e.SecureMode = true
+
+	_, err := e.RenderSSR(`@signal(payload = "<img src=x onerror=alert(1)>")<div data-spl-bind-innerHTML="payload"></div>`, nil)
+	if err == nil {
+		t.Fatal("expected innerHTML binding to be rejected")
+	}
+	if !strings.Contains(err.Error(), "innerHTML bindings are not allowed") {
+		t.Fatalf("expected innerHTML binding rejection, got %v", err)
+	}
+}
+
+func TestSecurityStreamFallbackCheckedInSecureMode(t *testing.T) {
+	e := New()
+	e.SecureMode = true
+
+	var out strings.Builder
+	err := NewStreamRenderer(e, nil).RenderStream(&out, `@defer {safe}@fallback {<script>alert(1)</script>}`)
+	if err == nil {
+		t.Fatal("expected unsafe defer fallback to be rejected")
+	}
+	if !strings.Contains(err.Error(), "script tags are not allowed") {
+		t.Fatalf("expected script tag rejection, got %v", err)
+	}
+}
+
 func TestCompatibilityLegacySSRHandlersRemainRenderable(t *testing.T) {
 	e := New()
 	out, err := e.RenderSSR(`@signal(open = false)@handler(openDialog) { var dlg = document.querySelector('#dlg'); if (dlg && typeof dlg.showModal === 'function') { dlg.showModal(); } }<button on:click="openDialog">Open</button><dialog id="dlg">Hi</dialog>`, nil)
