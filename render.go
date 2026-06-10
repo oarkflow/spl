@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/oarkflow/interpreter"
 )
@@ -205,9 +206,24 @@ func (e *Engine) renderLayout(layoutPath string, defines map[string][]Node, data
 		env.Set(k, toLazyObject(v))
 	}
 
+	// Pre-scan for prepend/append directives
+	prependContent := make(map[string][]Node)
+	appendContent := make(map[string][]Node)
+	var regularNodes []Node
+	for _, n := range layoutNodes {
+		switch v := n.(type) {
+		case *PrependNode:
+			prependContent[v.Name] = v.Body
+		case *AppendNode:
+			appendContent[v.Name] = v.Body
+		default:
+			regularNodes = append(regularNodes, n)
+		}
+	}
+
 	buf := getBuilder()
 	defer putBuilder(buf)
-	for _, n := range layoutNodes {
+	for _, n := range regularNodes {
 		if block, ok := n.(*BlockNode); ok {
 			if defined, exists := defines[block.Name]; exists {
 				// Pre-pass: collect component definitions from the define block
@@ -218,6 +234,17 @@ func (e *Engine) renderLayout(layoutPath string, defines map[string][]Node, data
 						e.mu.Unlock()
 					}
 				}
+				// Prepend content (if any)
+				if preBody, hasPre := prependContent[block.Name]; hasPre {
+					for _, pn := range preBody {
+						s, err := e.renderNode(pn, env, data, depth+1)
+						if err != nil {
+							return "", err
+						}
+						buf.WriteString(s)
+					}
+				}
+				// Define content
 				for _, dn := range defined {
 					s, err := e.renderNode(dn, env, data, depth+1)
 					if err != nil {
@@ -225,8 +252,55 @@ func (e *Engine) renderLayout(layoutPath string, defines map[string][]Node, data
 					}
 					buf.WriteString(s)
 				}
+				// Append content (if any)
+				if appBody, hasApp := appendContent[block.Name]; hasApp {
+					for _, an := range appBody {
+						s, err := e.renderNode(an, env, data, depth+1)
+						if err != nil {
+							return "", err
+						}
+						buf.WriteString(s)
+					}
+				}
 			} else {
+				// No define — render block's default body (with prepend/append)
+				if preBody, hasPre := prependContent[block.Name]; hasPre {
+					for _, pn := range preBody {
+						s, err := e.renderNode(pn, env, data, depth+1)
+						if err != nil {
+							return "", err
+						}
+						buf.WriteString(s)
+					}
+				}
 				for _, bn := range block.Body {
+					s, err := e.renderNode(bn, env, data, depth+1)
+					if err != nil {
+						return "", err
+					}
+					buf.WriteString(s)
+				}
+				if appBody, hasApp := appendContent[block.Name]; hasApp {
+					for _, an := range appBody {
+						s, err := e.renderNode(an, env, data, depth+1)
+						if err != nil {
+							return "", err
+						}
+						buf.WriteString(s)
+					}
+				}
+			}
+		} else if hb, ok := n.(*HasBlockNode); ok {
+			if _, exists := defines[hb.Name]; exists {
+				for _, bn := range hb.Body {
+					s, err := e.renderNode(bn, env, data, depth+1)
+					if err != nil {
+						return "", err
+					}
+					buf.WriteString(s)
+				}
+			} else if len(hb.Else) > 0 {
+				for _, bn := range hb.Else {
 					s, err := e.renderNode(bn, env, data, depth+1)
 					if err != nil {
 						return "", err
@@ -286,6 +360,18 @@ func (e *Engine) renderNode(n Node, env *interpreter.Environment, data map[strin
 
 	case *BlockNode:
 		// When encountered outside of layout context, just render the default body
+		return e.renderBody(v.Body, env, data, depth)
+
+	case *PrependNode:
+		// When encountered outside of layout context, render body directly
+		return e.renderBody(v.Body, env, data, depth)
+
+	case *AppendNode:
+		// When encountered outside of layout context, render body directly
+		return e.renderBody(v.Body, env, data, depth)
+
+	case *HasBlockNode:
+		// When encountered outside of layout context, render body
 		return e.renderBody(v.Body, env, data, depth)
 
 	case *RenderNode:
@@ -360,6 +446,9 @@ func (e *Engine) renderNode(n Node, env *interpreter.Environment, data map[strin
 
 	case *TranslateNode:
 		return e.renderTranslate(v, env, data, depth)
+
+	case *CacheNode:
+		return e.renderCache(v, env, data, depth)
 
 	case *SchemaFormNode:
 		return e.renderSchemaForm(v, env)
@@ -713,9 +802,12 @@ func (e *Engine) evalMatchCase(c MatchCase, value interpreter.Object, env *inter
 
 	// Check cache
 	e.mu.RLock()
-	program, ok := e.exprCache[src]
+	entry, ok := e.exprCache[src]
 	e.mu.RUnlock()
-	if !ok {
+	var program *interpreter.Program
+	if ok && !entry.isExpired(e.CachePolicy.ExprTTL) {
+		program = entry.program
+	} else {
 		l := interpreter.NewLexer(src)
 		p := interpreter.NewParser(l)
 		parsed := p.ParseProgram()
@@ -723,11 +815,14 @@ func (e *Engine) evalMatchCase(c MatchCase, value interpreter.Object, env *inter
 			return false, nil, fmt.Errorf("pattern parse error: %s", strings.Join(errs, "; "))
 		}
 		e.mu.Lock()
-		if cached, exists := e.exprCache[src]; exists {
-			program = cached
+		if entry, exists := e.exprCache[src]; exists && !entry.isExpired(e.CachePolicy.ExprTTL) {
+			program = entry.program
 		} else {
 			evictMap(e.exprCache, maxExprCacheSize)
-			e.exprCache[src] = parsed
+			e.exprCache[src] = exprCacheValue{
+				cacheEntry: cacheEntry{created: time.Now().UnixNano()},
+				program:    parsed,
+			}
 			program = parsed
 		}
 		e.mu.Unlock()
@@ -1664,4 +1759,64 @@ func (e *Engine) renderSchemaTable(n *SchemaTableNode, env *interpreter.Environm
 		}
 	}
 	return schema.RenderTableHTML(items), nil
+}
+
+// renderCache renders a @cache directive with fragment caching.
+func (e *Engine) renderCache(n *CacheNode, env *interpreter.Environment, data map[string]any, depth int) (string, error) {
+	keyObj, err := e.evalExpr(n.Key, env)
+	if err != nil {
+		return "", fmt.Errorf("@cache key %q: %w", n.Key, err)
+	}
+	cacheKey := objectToString(keyObj)
+
+	// Evaluate TTL
+	var ttl int
+	if n.TTL != "" {
+		ttlObj, err := e.evalExpr(n.TTL, env)
+		if err != nil {
+			return "", fmt.Errorf("@cache ttl %q: %w", n.TTL, err)
+		}
+		switch v := ttlObj.(type) {
+		case *interpreter.Integer:
+			ttl = int(v.Value)
+		case *interpreter.String:
+			fmt.Sscanf(v.Value, "%d", &ttl)
+		}
+	} else {
+		ttl = e.CachePolicy.FragmentTTL
+	}
+
+	// Build full key including dependency values
+	fullKey := "@cache:" + cacheKey
+	for _, dep := range n.Deps {
+		depObj, err := e.evalExpr(dep, env)
+		if err != nil {
+			return "", fmt.Errorf("@cache dep %q: %w", dep, err)
+		}
+		fullKey += ":" + objectToString(depObj)
+	}
+
+	// Check fragment cache
+	e.mu.RLock()
+	if entry, ok := e.fragmentCache[fullKey]; ok && !entry.isExpired(ttl) {
+		e.mu.RUnlock()
+		return entry.html, nil
+	}
+	e.mu.RUnlock()
+
+	// Render body
+	html, err := e.renderBody(n.Body, env, data, depth)
+	if err != nil {
+		return "", err
+	}
+
+	// Store in cache
+	e.mu.Lock()
+	evictMap(e.fragmentCache, maxFragmentCacheSize)
+	e.fragmentCache[fullKey] = fragmentCacheValue{
+		cacheEntry: cacheEntry{created: time.Now().UnixNano()},
+		html:       html,
+	}
+	e.mu.Unlock()
+	return html, nil
 }

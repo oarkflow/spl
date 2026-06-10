@@ -1,0 +1,14 @@
+@extends("views/layout.html")
+
+@define("header") {
+  <h1>${title}</h1>
+}
+
+@define("content") {
+  <p>This is the main content for ${title}.</p>
+  <ul>
+    @for(item in items) {
+      <li>${item}</li>
+    }
+  </ul>
+}

@@ -40,6 +40,7 @@ func registerBuiltinFilters(e *Engine) {
 	e.Filters["padend"] = filterPadEnd
 	e.Filters["wrap"] = filterWrap
 	e.Filters["date"] = filterDate
+	e.Filters["debug"] = filterDebug
 }
 
 func filterUpper(val any, args ...string) string {
@@ -385,4 +386,14 @@ func str(val any) string {
 	default:
 		return fmt.Sprintf("%v", val)
 	}
+}
+
+// filterDebug prints type and value information for debugging.
+// Usage: ${expr | debug} or ${expr | debug "label"}
+func filterDebug(val any, args ...string) string {
+	label := ""
+	if len(args) > 0 {
+		label = args[0] + ": "
+	}
+	return fmt.Sprintf("<!-- DEBUG %s(%T) %v -->", label, val, val)
 }

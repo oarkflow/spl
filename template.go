@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/oarkflow/interpreter"
 )
@@ -21,7 +22,70 @@ const (
 	maxTmplCacheSize         = 500   // parsed template strings
 	maxCompiledFileCacheSize = 500   // compiled file templates
 	maxCompiledTextCacheSize = 500   // compiled text templates
+	maxFragmentCacheSize     = 500   // cached rendered fragments
 )
+
+// CachePolicy controls TTL-based expiry per cache type.
+// A zero-value CachePolicy means no TTL expiry (entries live until evicted by size).
+type CachePolicy struct {
+	// ExprTTL is the TTL for parsed expression ASTs and metadata. 0 = no expiry.
+	ExprTTL int
+	// FileTTL is the TTL for parsed template files. 0 = no expiry.
+	FileTTL int
+	// CompiledFileTTL is the TTL for compiled file templates. 0 = no expiry.
+	CompiledFileTTL int
+	// CompiledTextTTL is the TTL for compiled text templates. 0 = no expiry.
+	CompiledTextTTL int
+	// FragmentTTL is the TTL for @cache directive fragment cache entries. 0 = no expiry.
+	FragmentTTL int
+}
+
+func (p CachePolicy) hasTTL() bool {
+	return p.ExprTTL > 0 || p.FileTTL > 0 || p.CompiledFileTTL > 0 || p.CompiledTextTTL > 0 || p.FragmentTTL > 0
+}
+
+// cacheEntry wraps any cached value with its creation time for TTL checks.
+type cacheEntry struct {
+	created int64 // unix nano
+}
+
+// exprCacheValue holds a parsed expression program with timestamp.
+type exprCacheValue struct {
+	cacheEntry
+	program *interpreter.Program
+}
+
+// exprMetaCacheValue holds expression fast-path metadata with timestamp.
+type exprMetaCacheValue struct {
+	cacheEntry
+	meta exprFastPath
+}
+
+// nodesCacheValue holds a parsed node slice with timestamp.
+type nodesCacheValue struct {
+	cacheEntry
+	nodes []Node
+}
+
+// compiledCacheValue holds a compiled template with timestamp.
+type compiledCacheValue struct {
+	cacheEntry
+	ct *compiledTemplate
+}
+
+// fragmentCacheValue holds a rendered fragment string with timestamp.
+type fragmentCacheValue struct {
+	cacheEntry
+	html string
+}
+
+// isExpired checks whether this entry has exceeded the given TTL (in seconds).
+func (e cacheEntry) isExpired(ttl int) bool {
+	if ttl <= 0 {
+		return false
+	}
+	return time.Now().UnixNano()-e.created > int64(ttl)*1e9
+}
 
 // evictRandom removes ~20% of entries from a map by random sampling.
 // Called under write lock. Uses random eviction for O(1) amortized cost.
@@ -124,11 +188,11 @@ type Engine struct {
 	Components          map[string]componentDef         // registered reusable components
 	slotStack           []*slotContext                  // stack for nested component slot contexts
 	watchState          map[string]string               // @watch: expr → last evaluated value string
-	exprCache           map[string]*interpreter.Program // cached parsed expression ASTs
-	fileCache           map[string][]Node               // cached parsed template files by resolved path
-	tmplCache           map[string][]Node               // cached parsed template strings
-	compiledFileCache   map[string]*compiledTemplate
-	compiledTextCache   map[string]*compiledTemplate
+	exprCache           map[string]exprCacheValue     // cached parsed expression ASTs
+	fileCache           map[string]nodesCacheValue    // cached parsed template files by resolved path
+	tmplCache           map[string]nodesCacheValue    // cached parsed template strings
+	compiledFileCache   map[string]compiledCacheValue
+	compiledTextCache   map[string]compiledCacheValue
 	baseEnv             *interpreter.Environment // base environment for the current render call
 	globalEnv           *interpreter.Environment // cached global environment (created once)
 	hydration           *hydrationState          // SSR hydration state for the current render call
@@ -144,7 +208,7 @@ type Engine struct {
 	mu                  *sync.RWMutex
 
 	// Fast-path expression metadata cache
-	exprMeta map[string]exprFastPath // expression string → fast-path info
+	exprMeta map[string]exprMetaCacheValue // expression string → fast-path info
 
 	// Helpers holds user-registered functions callable from template expressions.
 	// Keys are function names, values are Go functions that accept and return any.
@@ -155,6 +219,12 @@ type Engine struct {
 
 	// I18n configures internationalization for @translate directives.
 	I18n *I18nConfig
+
+	// CachePolicy controls TTL-based expiry per cache type.
+	CachePolicy CachePolicy
+
+	// fragmentCache stores rendered @cache directive output.
+	fragmentCache map[string]fragmentCacheValue
 
 	// Schema-driven UI generation
 	SchemaRegistry *SchemaRegistry
@@ -169,12 +239,13 @@ func New() *Engine {
 		AutoEscape:        true,
 		MaxDepth:          64,
 		Components:        make(map[string]componentDef),
-		exprCache:         make(map[string]*interpreter.Program),
-		exprMeta:          make(map[string]exprFastPath),
-		fileCache:         make(map[string][]Node),
-		tmplCache:         make(map[string][]Node),
-		compiledFileCache: make(map[string]*compiledTemplate),
-		compiledTextCache: make(map[string]*compiledTemplate),
+		exprCache:         make(map[string]exprCacheValue),
+		exprMeta:          make(map[string]exprMetaCacheValue),
+		fileCache:         make(map[string]nodesCacheValue),
+		tmplCache:         make(map[string]nodesCacheValue),
+		compiledFileCache: make(map[string]compiledCacheValue),
+		compiledTextCache: make(map[string]compiledCacheValue),
+		fragmentCache:     make(map[string]fragmentCacheValue),
 		SecureMode:        false,
 		Helpers:           make(map[string]any),
 		mu:                &sync.RWMutex{},
@@ -184,6 +255,7 @@ func New() *Engine {
 	cacheRegistry.engines = append(cacheRegistry.engines, e)
 	cacheRegistry.mu.Unlock()
 	registerBuiltinFilters(e)
+	registerBuiltinHelpers(e)
 	return e
 }
 
@@ -404,13 +476,31 @@ func (e *Engine) RenderStreamFile(w io.Writer, path string, data map[string]any)
 }
 
 // InvalidateCaches clears parsed template caches so subsequent renders re-read source.
+// Expression caches (parsed ASTs and metadata) are preserved since they are
+// independent of template files and rarely need invalidation.
+// Use ClearAllCaches to also clear expression and fragment caches.
 func (e *Engine) InvalidateCaches() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.fileCache = make(map[string][]Node)
-	e.tmplCache = make(map[string][]Node)
-	e.compiledFileCache = make(map[string]*compiledTemplate)
-	e.compiledTextCache = make(map[string]*compiledTemplate)
+	e.fileCache = make(map[string]nodesCacheValue)
+	e.tmplCache = make(map[string]nodesCacheValue)
+	e.compiledFileCache = make(map[string]compiledCacheValue)
+	e.compiledTextCache = make(map[string]compiledCacheValue)
+	e.fragmentCache = make(map[string]fragmentCacheValue)
+	e.watchState = make(map[string]string)
+}
+
+// ClearAllCaches clears all caches including expression and fragment caches.
+func (e *Engine) ClearAllCaches() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.fileCache = make(map[string]nodesCacheValue)
+	e.tmplCache = make(map[string]nodesCacheValue)
+	e.compiledFileCache = make(map[string]compiledCacheValue)
+	e.compiledTextCache = make(map[string]compiledCacheValue)
+	e.exprCache = make(map[string]exprCacheValue)
+	e.exprMeta = make(map[string]exprMetaCacheValue)
+	e.fragmentCache = make(map[string]fragmentCacheValue)
 	e.watchState = make(map[string]string)
 }
 
@@ -430,15 +520,27 @@ func (e *Engine) CacheStats() CacheStats {
 	}
 }
 
+// ClearFragmentCache clears cached @cache directive entries.
+func (e *Engine) ClearFragmentCache() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.fragmentCache = make(map[string]fragmentCacheValue)
+}
+
 // loadFile reads and parses a template file, using the file cache.
 // When e.FS is set, files are read from the embedded filesystem.
 func (e *Engine) loadFile(resolved string) ([]Node, error) {
 	e.mu.RLock()
-	if nodes, ok := e.fileCache[resolved]; ok {
+	if entry, ok := e.fileCache[resolved]; ok {
+		if !entry.isExpired(e.CachePolicy.FileTTL) {
+			e.mu.RUnlock()
+			return entry.nodes, nil
+		}
 		e.mu.RUnlock()
-		return nodes, nil
+		// Expired — fall through to reload
+	} else {
+		e.mu.RUnlock()
 	}
-	e.mu.RUnlock()
 	var content []byte
 	var err error
 	if e.FS != nil {
@@ -455,7 +557,10 @@ func (e *Engine) loadFile(resolved string) ([]Node, error) {
 	}
 	e.mu.Lock()
 	evictMap(e.fileCache, maxFileCacheSize)
-	e.fileCache[resolved] = nodes
+	e.fileCache[resolved] = nodesCacheValue{
+		cacheEntry: cacheEntry{created: time.Now().UnixNano()},
+		nodes:      nodes,
+	}
 	e.mu.Unlock()
 	return nodes, nil
 }
@@ -492,9 +597,11 @@ func (e *Engine) cloneRegisteredComponents() map[string]componentDef {
 
 func (e *Engine) compileStringTemplate(tmpl string) (*compiledTemplate, error) {
 	e.mu.RLock()
-	if ct, ok := e.compiledTextCache[tmpl]; ok {
-		e.mu.RUnlock()
-		return ct, nil
+	if entry, ok := e.compiledTextCache[tmpl]; ok {
+		if !entry.isExpired(e.CachePolicy.CompiledTextTTL) {
+			e.mu.RUnlock()
+			return entry.ct, nil
+		}
 	}
 	e.mu.RUnlock()
 	nodes, err := e.parseWithEngineDelims(tmpl)
@@ -502,24 +609,33 @@ func (e *Engine) compileStringTemplate(tmpl string) (*compiledTemplate, error) {
 		return nil, err
 	}
 	ct := e.buildCompiledTemplate(nodes)
+	now := time.Now().UnixNano()
 	e.mu.Lock()
-	if existing, ok := e.compiledTextCache[tmpl]; ok {
+	if entry, ok := e.compiledTextCache[tmpl]; ok && !entry.isExpired(e.CachePolicy.CompiledTextTTL) {
 		e.mu.Unlock()
-		return existing, nil
+		return entry.ct, nil
 	}
 	evictMap(e.tmplCache, maxTmplCacheSize)
-	e.tmplCache[tmpl] = nodes
+	e.tmplCache[tmpl] = nodesCacheValue{
+		cacheEntry: cacheEntry{created: now},
+		nodes:      nodes,
+	}
 	evictMap(e.compiledTextCache, maxCompiledTextCacheSize)
-	e.compiledTextCache[tmpl] = ct
+	e.compiledTextCache[tmpl] = compiledCacheValue{
+		cacheEntry: cacheEntry{created: now},
+		ct:         ct,
+	}
 	e.mu.Unlock()
 	return ct, nil
 }
 
 func (e *Engine) compileFileTemplate(resolved string) (*compiledTemplate, error) {
 	e.mu.RLock()
-	if ct, ok := e.compiledFileCache[resolved]; ok {
-		e.mu.RUnlock()
-		return ct, nil
+	if entry, ok := e.compiledFileCache[resolved]; ok {
+		if !entry.isExpired(e.CachePolicy.CompiledFileTTL) {
+			e.mu.RUnlock()
+			return entry.ct, nil
+		}
 	}
 	e.mu.RUnlock()
 	nodes, err := e.loadFile(resolved)
@@ -527,13 +643,17 @@ func (e *Engine) compileFileTemplate(resolved string) (*compiledTemplate, error)
 		return nil, err
 	}
 	ct := e.buildCompiledTemplate(nodes)
+	now := time.Now().UnixNano()
 	e.mu.Lock()
-	if existing, ok := e.compiledFileCache[resolved]; ok {
+	if entry, ok := e.compiledFileCache[resolved]; ok && !entry.isExpired(e.CachePolicy.CompiledFileTTL) {
 		e.mu.Unlock()
-		return existing, nil
+		return entry.ct, nil
 	}
 	evictMap(e.compiledFileCache, maxCompiledFileCacheSize)
-	e.compiledFileCache[resolved] = ct
+	e.compiledFileCache[resolved] = compiledCacheValue{
+		cacheEntry: cacheEntry{created: now},
+		ct:         ct,
+	}
 	e.mu.Unlock()
 	return ct, nil
 }
@@ -706,9 +826,9 @@ func (e *Engine) resolveFSPath(path string) (string, error) {
 // loadFSFile reads and parses a template file from the embedded filesystem, using the file cache.
 func (e *Engine) loadFSFile(resolved string) ([]Node, error) {
 	e.mu.RLock()
-	if nodes, ok := e.fileCache[resolved]; ok {
+	if entry, ok := e.fileCache[resolved]; ok && !entry.isExpired(e.CachePolicy.FileTTL) {
 		e.mu.RUnlock()
-		return nodes, nil
+		return entry.nodes, nil
 	}
 	e.mu.RUnlock()
 	content, err := fs.ReadFile(e.FS, resolved)
@@ -721,7 +841,10 @@ func (e *Engine) loadFSFile(resolved string) ([]Node, error) {
 	}
 	e.mu.Lock()
 	evictMap(e.fileCache, maxFileCacheSize)
-	e.fileCache[resolved] = nodes
+	e.fileCache[resolved] = nodesCacheValue{
+		cacheEntry: cacheEntry{created: time.Now().UnixNano()},
+		nodes:      nodes,
+	}
 	e.mu.Unlock()
 	return nodes, nil
 }
@@ -729,9 +852,9 @@ func (e *Engine) loadFSFile(resolved string) ([]Node, error) {
 // compileFSFileTemplate compiles a template from the embedded filesystem.
 func (e *Engine) compileFSFileTemplate(resolved string) (*compiledTemplate, error) {
 	e.mu.RLock()
-	if ct, ok := e.compiledFileCache[resolved]; ok {
+	if entry, ok := e.compiledFileCache[resolved]; ok && !entry.isExpired(e.CachePolicy.CompiledFileTTL) {
 		e.mu.RUnlock()
-		return ct, nil
+		return entry.ct, nil
 	}
 	e.mu.RUnlock()
 	nodes, err := e.loadFSFile(resolved)
@@ -739,13 +862,17 @@ func (e *Engine) compileFSFileTemplate(resolved string) (*compiledTemplate, erro
 		return nil, err
 	}
 	ct := e.buildCompiledTemplate(nodes)
+	now := time.Now().UnixNano()
 	e.mu.Lock()
-	if existing, ok := e.compiledFileCache[resolved]; ok {
+	if entry, ok := e.compiledFileCache[resolved]; ok && !entry.isExpired(e.CachePolicy.CompiledFileTTL) {
 		e.mu.Unlock()
-		return existing, nil
+		return entry.ct, nil
 	}
 	evictMap(e.compiledFileCache, maxCompiledFileCacheSize)
-	e.compiledFileCache[resolved] = ct
+	e.compiledFileCache[resolved] = compiledCacheValue{
+		cacheEntry: cacheEntry{created: now},
+		ct:         ct,
+	}
 	e.mu.Unlock()
 	return ct, nil
 }
@@ -941,9 +1068,33 @@ func (e *Engine) evalExpr(expr string, env *interpreter.Environment) (interprete
 func (e *Engine) evalExprTrimmed(expr string, env *interpreter.Environment) (interpreter.Object, error) {
 	// Combined cache lookup — single lock acquisition for both caches
 	e.mu.RLock()
-	meta, metaOK := e.exprMeta[expr]
-	program, progOK := e.exprCache[expr]
+	metaEntry, metaOK := e.exprMeta[expr]
+	progEntry, progOK := e.exprCache[expr]
 	e.mu.RUnlock()
+
+	var meta exprFastPath
+	var program *interpreter.Program
+
+	if metaOK {
+		if metaEntry.isExpired(e.CachePolicy.ExprTTL) {
+			e.mu.Lock()
+			delete(e.exprMeta, expr)
+			e.mu.Unlock()
+			metaOK = false
+		} else {
+			meta = metaEntry.meta
+		}
+	}
+	if progOK {
+		if progEntry.isExpired(e.CachePolicy.ExprTTL) {
+			e.mu.Lock()
+			delete(e.exprCache, expr)
+			e.mu.Unlock()
+			progOK = false
+		} else {
+			program = progEntry.program
+		}
+	}
 
 	if metaOK {
 		switch meta.kind {
@@ -988,14 +1139,21 @@ func (e *Engine) evalExprTrimmed(expr string, env *interpreter.Environment) (int
 		if errs := p.Errors(); len(errs) > 0 {
 			return nil, fmt.Errorf("expression parse error: %s", strings.Join(errs, "; "))
 		}
+		now := time.Now().UnixNano()
 		e.mu.Lock()
 		evictMap(e.exprCache, maxExprCacheSize)
-		e.exprCache[expr] = program
+		e.exprCache[expr] = exprCacheValue{
+			cacheEntry: cacheEntry{created: now},
+			program:    program,
+		}
 
 		// Analyze for fast path
 		meta = analyzeExpr(program)
 		evictMap(e.exprMeta, maxExprMetaCacheSize)
-		e.exprMeta[expr] = meta
+		e.exprMeta[expr] = exprMetaCacheValue{
+			cacheEntry: cacheEntry{created: now},
+			meta:       meta,
+		}
 		e.mu.Unlock()
 
 		// Try fast path on first encounter too
@@ -1027,7 +1185,10 @@ func (e *Engine) evalExprTrimmed(expr string, env *interpreter.Environment) (int
 			}
 			meta.constResult = result
 			e.mu.Lock()
-			e.exprMeta[expr] = meta
+			e.exprMeta[expr] = exprMetaCacheValue{
+				cacheEntry: cacheEntry{created: now},
+				meta:       meta,
+			}
 			e.mu.Unlock()
 			// Return a clone since the caller may mutate (e.g., adding default props)
 			if h, ok := result.(*interpreter.Hash); ok {

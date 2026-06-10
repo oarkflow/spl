@@ -346,7 +346,7 @@ function initMonaco() {
         tokenizer: {
           root: [
             [/@\/\/.*$/, 'comment'],
-            [/@(if|elseif|else|for|empty|switch|case|default|raw|include|extends|block|define|component|render|slot|fill|let|computed|watch|signal|effect|reactive|bind|handler|import)\b/, 'keyword'],
+            [/@(if|elseif|else|for|empty|switch|case|default|raw|include|extends|block|define|component|render|slot|fill|let|computed|watch|signal|effect|reactive|bind|handler|import|cache|endcache|prepend|append|hasBlock|translate|local|schema_form|schema_detail)\b/, 'keyword'],
             [/\$\{/, { token: 'delimiter.bracket', next: '@expr' }],
             [/<\/?[\w-]+/, 'tag'],
             [/>/, 'tag'],
@@ -357,7 +357,7 @@ function initMonaco() {
           expr: [
             [/\}/, { token: 'delimiter.bracket', next: '@pop' }],
             [/\|/, 'operator'],
-            [/(raw|upper|lower|trim|title|escape|json|format|default|slug|truncate|nl2br|urlencode|reverse|capitalize|replace)\b/, 'keyword'],
+            [/(raw|upper|lower|trim|title|escape|json|format|default|slug|truncate|nl2br|urlencode|reverse|capitalize|replace|date|debug)\b/, 'keyword'],
             [/"([^"\\]|\\.)*"/, 'string'],
             [/\b[0-9]+\b/, 'number'],
             [/[a-zA-Z_][\w]*/, 'identifier'],

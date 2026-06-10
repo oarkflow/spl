@@ -33,6 +33,31 @@ import (
 //go:embed static/*
 var staticFS embed.FS
 
+// playgroundI18n configures translation bundles for @translate examples.
+var playgroundI18n = &template.I18nConfig{
+	DefaultLocale: "en",
+	Bundles: map[string]*template.TranslationBundle{
+		"en": {
+			Messages: map[string]string{
+				"greeting":         "Hello from SPL!",
+				"welcome":          "Welcome, {{name}}!",
+				"items_count":      "{{count}} item(s)",
+				"items_count.one":  "1 item",
+				"items_count.other": "{{count}} items",
+			},
+		},
+		"fr": {
+			Messages: map[string]string{
+				"greeting":         "Bonjour depuis SPL !",
+				"welcome":          "Bienvenue, {{name}} !",
+				"items_count.one":  "1 article",
+				"items_count.other": "{{count}} articles",
+			},
+		},
+	},
+	FallbackLocale: "en",
+}
+
 type renderRequest struct {
 	Template string `json:"template"`
 	Data     string `json:"data"`
@@ -1149,6 +1174,54 @@ textarea.spl-schema-input { resize: vertical; }
 </div>`,
 			"data": `{"profileData":{"identity":{"name":"Mira Patel","role":"Engineer","active":true},"address":{"street":"42 Market Street","city":"Portland","region":"OR","postalCode":"97205"},"tags":["platform","templates"],"contacts":[{"kind":"Email","value":"mira@example.com","primary":true,"phones":["+1-555-0101"]},{"kind":"Chat","value":"mira.chat","primary":false,"phones":[]}]}}`,
 		},
+		{
+			"name":     "date-filter",
+			"label":    "Date Filter",
+			"category": "Core Templates",
+			"tags":     []string{"date", "formatting"},
+			"template": "<h2>Date Filter</h2>\n<p>Default format: ${ts | date}</p>\n<p>Custom: ${ts | date \"Jan 2, 2006 15:04\"}</p>\n<p>Full date: ${ts | date \"Monday, January 2, 2006\"}</p>\n<p>Input parse: ${rfc | date \"2006-01-02\" \"Jan 2\"}</p>",
+			"data": `{"ts": 1749580000, "rfc": "2026-06-10T18:00:00Z"}`,
+		},
+		{
+			"name":     "builtin-helpers",
+			"label":    "Built-in Helpers",
+			"category": "Core Templates",
+			"tags":     []string{"helpers", "functions", "slice", "json"},
+			"template": "<h2>Built-in Helper Functions</h2>\n<p>Items: ${items}</p>\n<p>Slice (first 2): ${slice(items, 0, 2)}</p>\n<p>First: ${first(items)}</p>\n<p>Last: ${last(items)}</p>\n<p>Length: ${length(items)}</p>\n<p>Has 'red': ${has(items, \"red\")}</p>\n<p>Join: ${join(items, \", \")}</p>\n<p>Upper: ${upper(\"hello\")}</p>\n<p>Lower: ${lower(\"WORLD\")}</p>\n<p>Defaults: ${defaults(missing, \"fallback\")}</p>\n<p>JSON: ${json(info)}</p>",
+			"data": `{"items": ["red", "green", "blue", "yellow"], "info": {"name": "Alice", "role": "admin", "active": true}, "missing": null}`,
+		},
+		{
+			"name":     "cache-directive",
+			"label":    "@cache Directive",
+			"category": "Advanced Templates",
+			"tags":     []string{"cache", "fragment", "performance"},
+			"template": "<h2>Fragment Caching</h2>\n<p>The block below caches its output for the engine's FragmentTTL (30s):</p>\n@cache(\"demo\", \"30\") {\n  <div style=\"border:1px solid #0891b2;border-radius:8px;padding:1rem;background:#f0f9ff\">\n    <p><strong>Cached fragment</strong></p>\n    <p>Generated at: ${now()}</p>\n    <p>Re-render within 30s to see the same timestamp.</p>\n  </div>\n}\n<p>Live (uncached): ${now()}</p>",
+			"data": `{}`,
+		},
+		{
+			"name":     "i18n-translate",
+			"label":    "@translate / i18n",
+			"category": "Advanced Templates",
+			"tags":     []string{"i18n", "translate"},
+			"template": "<h2>i18n Translation</h2>\n<p>English: @translate(\"greeting\")</p>\n<p>French:  @translate(\"greeting\", \"fr\")</p>\n<p>Fallback: @translate(\"missing_key\") { <em>Fallback body</em> }</p>",
+			"data": `{}`,
+		},
+		{
+			"name":     "debug-filter",
+			"label":    "Debug Filter",
+			"category": "Core Templates",
+			"tags":     []string{"debug", "inspect"},
+			"template": "<h2>Debug Filter</h2>\n<p>Simple: ${name | debug}</p>\n<p>Labeled: ${name | debug \"username\"}</p>\n<p>Object: ${info | debug \"user_info\"}</p>",
+			"data": `{"name": "Alice", "info": {"role": "admin", "active": true}}`,
+		},
+		{
+			"name":     "prepend-append",
+			"label":    "@prepend / @append / @hasBlock",
+			"category": "Advanced Templates",
+			"tags":     []string{"prepend", "append", "inheritance"},
+			"template": "<h2>Template Inheritance</h2>\n<p>These directives render their body directly in standalone mode.</p>\n<p><b>prepend</b> adds content before a block, <b>append</b> adds after.</p>\n<p><b>hasBlock</b> checks if a define exists in the child template.</p>\n<h3>Standalone usage:</h3>\n@prepend(\"content\") {\n  <p>This is prepended content.</p>\n}\n@append(\"content\") {\n  <p>This is appended content.</p>\n}\n@hasBlock(\"test\") {\n  <p>hasBlock true</p>\n} @else {\n  <p>hasBlock false (no define in standalone mode)</p>\n}",
+			"data": `{}`,
+		},
 	}
 }
 
@@ -1355,6 +1428,10 @@ func main() {
 		engine.BaseDir = cwd
 		engine.AutoEscape = true
 		engine.SecureMode = false
+		engine.I18n = playgroundI18n
+		engine.CachePolicy = template.CachePolicy{
+			FragmentTTL: 30 * 1e9, // 30 seconds in nanoseconds
+		}
 		if userSchema != nil {
 			for name, schemaDef := range userSchema {
 				if schemaMap, ok := schemaDef.(map[string]any); ok {

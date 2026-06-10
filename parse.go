@@ -139,6 +139,31 @@ type DefineNode struct {
 
 func (n *DefineNode) nodeType() string { return "define" }
 
+// PrependNode adds content before a parent block's default content.
+type PrependNode struct {
+	Name string
+	Body []Node
+}
+
+func (n *PrependNode) nodeType() string { return "prepend" }
+
+// AppendNode adds content after a parent block's default content.
+type AppendNode struct {
+	Name string
+	Body []Node
+}
+
+func (n *AppendNode) nodeType() string { return "append" }
+
+// HasBlockNode checks if a child has defined content for a named block.
+type HasBlockNode struct {
+	Name string
+	Body []Node
+	Else []Node // optional @else content
+}
+
+func (n *HasBlockNode) nodeType() string { return "hasBlock" }
+
 // PropDef describes a single declared prop with optional alias, default, and ?-prefix optionality.
 type PropDef struct {
 	Name     string // external prop name (what the caller passes)
@@ -228,6 +253,16 @@ type SchemaTableNode struct {
 }
 
 func (n *SchemaTableNode) nodeType() string { return "schema_table" }
+
+// CacheNode represents a @cache directive for fragment caching.
+type CacheNode struct {
+	Key  string   // cache key expression (evaluated at render time)
+	TTL  string   // optional TTL expression in seconds ("0" or "" = use engine CachePolicy.FragmentTTL)
+	Deps []string // optional dependency expressions (used as cache key suffix)
+	Body []Node
+}
+
+func (n *CacheNode) nodeType() string { return "cache" }
 
 // --- Parser ---
 
@@ -520,6 +555,30 @@ func (p *parser) parseNodes(inBlock bool) ([]Node, error) {
 				}
 				nodes = append(nodes, node)
 				continue
+			case "prepend":
+				flushText()
+				node, err := p.parsePrepend()
+				if err != nil {
+					return nil, err
+				}
+				nodes = append(nodes, node)
+				continue
+			case "append":
+				flushText()
+				node, err := p.parseAppend()
+				if err != nil {
+					return nil, err
+				}
+				nodes = append(nodes, node)
+				continue
+			case "hasBlock":
+				flushText()
+				node, err := p.parseHasBlock()
+				if err != nil {
+					return nil, err
+				}
+				nodes = append(nodes, node)
+				continue
 			case "component":
 				flushText()
 				node, err := p.parseComponent()
@@ -667,6 +726,14 @@ func (p *parser) parseNodes(inBlock bool) ([]Node, error) {
 			case "translate":
 				flushText()
 				node, err := p.parseTranslate()
+				if err != nil {
+					return nil, err
+				}
+				nodes = append(nodes, node)
+				continue
+			case "cache":
+				flushText()
+				node, err := p.parseCache()
 				if err != nil {
 					return nil, err
 				}
@@ -1687,6 +1754,82 @@ func (p *parser) parseDefine() (*DefineNode, error) {
 		return nil, p.errorf("@define body: %w", err)
 	}
 	return &DefineNode{Name: name, Body: body}, nil
+}
+
+// parsePrepend parses @prepend("name") { ... }
+func (p *parser) parsePrepend() (*PrependNode, error) {
+	p.advanceN(8) // skip '@prepend'
+	inner, err := p.readParenExpr()
+	if err != nil {
+		return nil, p.errorf("@prepend: %w", err)
+	}
+	name := unquote(strings.TrimSpace(inner))
+	p.skipWhitespaceAndNewlines()
+	if p.peek() != '{' {
+		return nil, p.errorf("@prepend: expected '{'")
+	}
+	p.advance()
+	body, err := p.parseNodes(true)
+	if err != nil {
+		return nil, p.errorf("@prepend body: %w", err)
+	}
+	return &PrependNode{Name: name, Body: body}, nil
+}
+
+// parseAppend parses @append("name") { ... }
+func (p *parser) parseAppend() (*AppendNode, error) {
+	p.advanceN(7) // skip '@append'
+	inner, err := p.readParenExpr()
+	if err != nil {
+		return nil, p.errorf("@append: %w", err)
+	}
+	name := unquote(strings.TrimSpace(inner))
+	p.skipWhitespaceAndNewlines()
+	if p.peek() != '{' {
+		return nil, p.errorf("@append: expected '{'")
+	}
+	p.advance()
+	body, err := p.parseNodes(true)
+	if err != nil {
+		return nil, p.errorf("@append body: %w", err)
+	}
+	return &AppendNode{Name: name, Body: body}, nil
+}
+
+// parseHasBlock parses @hasBlock("name") { ... } @else { ... }
+func (p *parser) parseHasBlock() (*HasBlockNode, error) {
+	p.advanceN(9) // skip '@hasBlock'
+	inner, err := p.readParenExpr()
+	if err != nil {
+		return nil, p.errorf("@hasBlock: %w", err)
+	}
+	name := unquote(strings.TrimSpace(inner))
+	p.skipWhitespaceAndNewlines()
+	if p.peek() != '{' {
+		return nil, p.errorf("@hasBlock: expected '{'")
+	}
+	p.advance()
+	body, err := p.parseNodes(true)
+	if err != nil {
+		return nil, p.errorf("@hasBlock body: %w", err)
+	}
+	node := &HasBlockNode{Name: name, Body: body}
+	// Optional @else
+	p.skipWhitespaceAndNewlines()
+	if p.startsWith("@else") {
+		p.advanceN(5)
+		p.skipWhitespaceAndNewlines()
+		if p.peek() != '{' {
+			return nil, p.errorf("@hasBlock @else: expected '{'")
+		}
+		p.advance()
+		elseBody, err := p.parseNodes(true)
+		if err != nil {
+			return nil, p.errorf("@hasBlock @else body: %w", err)
+		}
+		node.Else = elseBody
+	}
+	return node, nil
 }
 
 // parseComponent parses @component("Name") { ... } or @component("Name", prop1, prop2 as alias = default) { ... }

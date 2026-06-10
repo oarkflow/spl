@@ -9,7 +9,6 @@ import (
 	"embed"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	template "github.com/oarkflow/spl"
@@ -21,16 +20,17 @@ var localesFS embed.FS
 //go:embed views/fragment.html
 var fragmentTmpl string
 
+//go:embed views/layout.html views/child.html
+var viewsFS embed.FS
+
 func main() {
 	// -------------------------------------------------------
 	// 1. DATE FILTER
 	// -------------------------------------------------------
 	fmt.Println("=== 1. Date Filter ===")
 
-	engine := template.New()
 	now := time.Now()
-
-	out, err := engine.Render(`
+	out, err := template.New().Render(`
 Unix timestamp: ${ts | date}
 RFC3339:       ${rfc | date "Jan 2, 2006 15:04"}
 Simple date:   ${simple | date "Monday, Jan 2, 2006"}
@@ -50,15 +50,15 @@ Input/output:  ${rfc | date "2006-01-02" "Jan 2"}
 	// -------------------------------------------------------
 	fmt.Println("=== 2. RegisterHelper ===")
 
-	engine.RegisterHelper("greet", func(args ...any) any {
+	eng := template.New()
+	eng.RegisterHelper("greet", func(args ...any) any {
 		if len(args) == 0 {
 			return "Hello, world!"
 		}
 		name, _ := args[0].(string)
 		return "Hello, " + name + "!"
 	})
-
-	engine.RegisterHelper("add", func(args ...any) any {
+	eng.RegisterHelper("add", func(args ...any) any {
 		var sum float64
 		for _, a := range args {
 			switch v := a.(type) {
@@ -73,19 +73,10 @@ Input/output:  ${rfc | date "2006-01-02" "Jan 2"}
 		return sum
 	})
 
-	engine.RegisterHelper("upper", func(args ...any) any {
-		if len(args) == 0 {
-			return ""
-		}
-		s, _ := args[0].(string)
-		return strings.ToUpper(s)
-	})
-
-	out, err = engine.Render(`
+	out, err = eng.Render(`
 ${greet(name)}
 ${greet()}
 10 + 20 = ${add(x, y)}
-${upper("hello world")}
 `, map[string]any{"name": "Alice", "x": 10, "y": 20})
 	if err != nil {
 		log.Fatalf("register helper: %v", err)
@@ -118,29 +109,103 @@ Count: {{count}}
 	fsEngine := template.New()
 	fsEngine.FS = localesFS
 
-	// RenderFSFile reads and renders a template from the embedded FS
 	out, err = fsEngine.RenderFSFile("locales/en.json", nil)
 	if err != nil {
 		log.Fatalf("render fs file: %v", err)
 	}
 	fmt.Println("Locale file content:", out)
 
-	// embedded FS also works with @include, @extends, @import via engine.FS
-	fsEngine2 := template.New()
-	fsEngine2.FS = localesFS
-	out, err = fsEngine2.Render(`<p>FS support active</p>`, nil)
+	// -------------------------------------------------------
+	// 5. CACHE TTL & CONFIGURABLE CACHE POLICY
+	// -------------------------------------------------------
+	fmt.Println("=== 5. Cache TTL ===")
+
+	cacheEngine := template.New()
+	cacheEngine.CachePolicy.CompiledTextTTL = 60 // 60 seconds
+
+	out, err = cacheEngine.Render(`<p>Cached with TTL: ${msg}</p>`, map[string]any{"msg": "hello"})
 	if err != nil {
-		log.Fatalf("fs engine: %v", err)
+		log.Fatalf("cache ttl: %v", err)
 	}
-	fmt.Println(out)
+	fmt.Print(out)
+	fmt.Println("  (CompiledTextTTL set to 60s — entry will expire in 1 minute)")
 
 	// -------------------------------------------------------
-	// 5. FRAGMENT RENDERING
+	// 6. @cache DIRECTIVE (FRAGMENT CACHING)
 	// -------------------------------------------------------
-	fmt.Println("=== 5. Fragment Rendering ===")
+	fmt.Println("=== 6. @cache Directive ===")
+
+	cacheDirEngine := template.New()
+	cacheDirEngine.CachePolicy.FragmentTTL = 30
+
+	out, err = cacheDirEngine.Render(`
+@cache("my-fragment", 10) {
+  <div class="cached-fragment">
+    <p>This fragment is cached for 10 seconds.</p>
+    <p>Generated at: ${now("15:04:05")}</p>
+  </div>
+}
+`, nil)
+	if err != nil {
+		log.Fatalf("@cache directive: %v", err)
+	}
+	fmt.Print(out)
+	fmt.Println("  (Run again within 10s to see cached output)")
+
+	// -------------------------------------------------------
+	// 7. BUILT-IN EXPRESSION HELPERS
+	// -------------------------------------------------------
+	fmt.Println("=== 7. Built-in Helpers ===")
+
+	out, err = template.New().Render(`
+slice:    ${slice(items, 0, 2)}
+first:    ${first(items)}
+last:     ${last(items)}
+length:   ${len(items)}
+has red:  ${has(items, "red")}
+join:     ${join(items, ", ")}
+upper:    ${upper("hello")}
+lower:    ${lower("WORLD")}
+defaults:  ${defaults(name, "Guest")}
+json:     ${json(info)}
+orElse:   ${orElse(empty, name, "fallback")}
+`, map[string]any{
+		"items": []any{"red", "green", "blue"},
+		"name":  "Alice",
+		"info":  map[string]any{"role": "admin", "active": true},
+		"empty": "",
+	})
+	if err != nil {
+		log.Fatalf("built-in helpers: %v", err)
+	}
+	fmt.Print(out)
+
+	// -------------------------------------------------------
+	// 8. ADVANCED INHERITANCE (@prepend / @append / @hasBlock)
+	// -------------------------------------------------------
+	fmt.Println("=== 8. Advanced Inheritance ===")
+
+	inheritEngine := template.New()
+	inheritEngine.FS = viewsFS
+	inheritEngine.Globals = map[string]any{
+		"year": time.Now().Year(),
+	}
+
+	out, err = inheritEngine.RenderFSFile("views/child.html", map[string]any{
+		"title": "My Page",
+		"items": []any{"Apple", "Banana", "Cherry"},
+	})
+	if err != nil {
+		log.Fatalf("advanced inheritance: %v", err)
+	}
+	fmt.Print(out)
+
+	// -------------------------------------------------------
+	// 9. FRAGMENT RENDERING
+	// -------------------------------------------------------
+	fmt.Println("=== 9. Fragment Rendering ===")
 
 	fragEngine := template.New()
-
 	out, err = fragEngine.RenderFragment(fragmentTmpl,
 		template.FragmentSelector{Type: "block", Value: "content"},
 		map[string]any{"title": "My Page"},
@@ -148,8 +213,7 @@ Count: {{count}}
 	if err != nil {
 		log.Fatalf("fragment content: %v", err)
 	}
-	fmt.Println("Content block:")
-	fmt.Print(out)
+	fmt.Println("Content block:", out)
 
 	out, err = fragEngine.RenderFragment(fragmentTmpl,
 		template.FragmentSelector{Type: "block", Value: "sidebar"},
@@ -158,28 +222,21 @@ Count: {{count}}
 	if err != nil {
 		log.Fatalf("fragment sidebar: %v", err)
 	}
-	fmt.Println("Sidebar block:")
-	fmt.Print(out)
+	fmt.Println("Sidebar block:", out)
 
 	// -------------------------------------------------------
-	// 6. MIDDLEWARE / LIFECYCLE HOOKS
+	// 10. MIDDLEWARE / LIFECYCLE HOOKS
 	// -------------------------------------------------------
-	fmt.Println("=== 6. Middleware / Lifecycle Hooks ===")
+	fmt.Println("=== 10. Middleware / Lifecycle Hooks ===")
 
 	hookEngine := template.New()
-
-	var renderCount int
 	hookEngine.Hooks.BeforeRender = func(ctx *template.RenderContext) error {
-		renderCount++
-		fmt.Printf("  [hook] before render #%d\n", renderCount)
+		fmt.Println("  [hook] before render")
 		return nil
 	}
 	hookEngine.Hooks.AfterRender = func(ctx *template.RenderContext) error {
-		fmt.Printf("  [hook] after render #%d\n", renderCount)
+		fmt.Println("  [hook] after render")
 		return nil
-	}
-	hookEngine.Hooks.OnError = func(ctx *template.RenderContext, err error) {
-		fmt.Printf("  [hook] error: %v\n", err)
 	}
 
 	out, err = hookEngine.Render(`<p>Hello, ${name}!</p>`, map[string]any{"name": "World"})
@@ -187,12 +244,11 @@ Count: {{count}}
 		log.Fatalf("hook render: %v", err)
 	}
 	fmt.Print(out)
-	fmt.Printf("Total renders: %d\n\n", renderCount)
 
 	// -------------------------------------------------------
-	// 7. I18N TRANSLATION
+	// 11. I18N TRANSLATION
 	// -------------------------------------------------------
-	fmt.Println("=== 7. i18n Translation Layer ===")
+	fmt.Println("=== 11. i18n Translation Layer ===")
 
 	i18nEngine := template.New()
 	i18nEngine.I18n = template.NewI18nConfig("en")
@@ -201,7 +257,6 @@ Count: {{count}}
 	if err := i18nEngine.I18n.LoadMessages("en", enBytes); err != nil {
 		log.Fatalf("load en locale: %v", err)
 	}
-
 	frBytes, _ := localesFS.ReadFile("locales/fr.json")
 	if err := i18nEngine.I18n.LoadMessages("fr", frBytes); err != nil {
 		log.Fatalf("load fr locale: %v", err)
@@ -219,12 +274,25 @@ Count: {{count}}
 	fmt.Print(out)
 
 	// -------------------------------------------------------
-	// 8. BUILD-TIME TEMPLATE COMPILATION
+	// 12. DEBUG FILTER
 	// -------------------------------------------------------
-	fmt.Println("=== 8. Build-Time Template Compilation ===")
+	fmt.Println("=== 12. Debug Filter ===")
 
-	compEngine := template.New()
-	compiled, err := compEngine.CompileToGo("hello", `<h1>${title}</h1><p>${message}</p>`)
+	dubugOut, err := template.New().Render(`
+${name | debug}
+${name | debug "user"}
+`, map[string]any{"name": "Alice"})
+	if err != nil {
+		log.Fatalf("debug filter: %v", err)
+	}
+	fmt.Print(dubugOut)
+
+	// -------------------------------------------------------
+	// 13. BUILD-TIME TEMPLATE COMPILATION
+	// -------------------------------------------------------
+	fmt.Println("=== 13. Build-Time Template Compilation ===")
+
+	compiled, err := template.New().CompileToGo("hello", `<h1>${title}</h1><p>${message}</p>`)
 	if err != nil {
 		log.Fatalf("compile to go: %v", err)
 	}
@@ -232,5 +300,5 @@ Count: {{count}}
 	fmt.Println(string(compiled))
 
 	// -------------------------------------------------------
-	fmt.Println("All features demonstrated successfully!")
+	fmt.Println("\nAll 13 features demonstrated successfully!")
 }

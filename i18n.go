@@ -293,3 +293,46 @@ func (e *Engine) renderTranslate(n *TranslateNode, env *interpreter.Environment,
 	// Fallback to body content
 	return e.renderBody(n.Body, env, data, depth)
 }
+
+// parseCache parses @cache("key") { ... }
+// @cache("key", ttl) { content }
+// @cache("key", ttl, "dep1", "dep2") { content }
+func (p *parser) parseCache() (*CacheNode, error) {
+	p.advanceN(len("@cache") + 1) // skip "@cache("
+	key := p.readUntil(',', ')')
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil, p.errorf("@cache requires a key argument")
+	}
+	node := &CacheNode{Key: key}
+	if p.peek() == ',' {
+		p.advance()
+		p.skipWhitespace()
+		ttl := p.readUntil(',', ')')
+		ttl = strings.TrimSpace(ttl)
+		node.TTL = ttl
+	}
+	for p.peek() == ',' {
+		p.advance()
+		p.skipWhitespace()
+		dep := p.readUntil(',', ')')
+		dep = strings.TrimSpace(dep)
+		if dep != "" {
+			node.Deps = append(node.Deps, dep)
+		}
+	}
+	if p.peek() == ')' {
+		p.advance()
+	}
+	p.skipWhitespaceAndNewlines()
+	if p.peek() != '{' {
+		return nil, p.errorf("@cache: expected '{'")
+	}
+	p.advance()
+	body, err := p.parseNodes(true)
+	if err != nil {
+		return nil, p.errorf("@cache body: %w", err)
+	}
+	node.Body = body
+	return node, nil
+}

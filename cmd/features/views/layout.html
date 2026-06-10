@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>${title}</title>
+</head>
+<body>
+  <header>
+    @block("header") {
+      <h1>Default Header</h1>
+    }
+  </header>
+
+  @prepend("content") {
+    <nav>Breadcrumb: Home / ${title}</nav>
+  }
+
+  <main>
+    @block("content") {
+      <p>Default content</p>
+    }
+  </main>
+
+  @append("content") {
+    <p><em>End of content.</em></p>
+  }
+
+  <footer>
+    @block("footer") {
+      <p>Default footer</p>
+    }
+    @append("footer") {
+      <p>${year} My Company</p>
+    }
+  </footer>
+</body>
+</html>
