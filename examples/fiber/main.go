@@ -1,11 +1,3 @@
-// Package main demonstrates using the SPL template engine with GoFiber
-// by implementing the fiber.Views interface.
-//
-// Run:
-//
-//	go run main.go
-//
-// Then visit http://localhost:3000
 package main
 
 import (
@@ -23,10 +15,6 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/oarkflow/template"
 )
-
-// ─── Data types for template demonstration ───
-// These demonstrate that SPL templates work with Go structs, typed slices,
-// typed maps, and custom types — not just map[string]any.
 
 type Country struct {
 	Code   string
@@ -56,17 +44,14 @@ type FormConfig struct {
 	AllowSignup  bool
 }
 
-// SPLViews implements fiber.Views using the SPL template engine.
 type SPLViews struct {
 	engine    *template.Engine
 	directory string
 	extension string
-	reload    bool // re-read templates on every render (dev mode)
-	ssr       bool // use SSR rendering with hydration for reactive features
+	reload    bool
+	ssr       bool
 }
 
-// New creates an SPLViews engine rooted at directory.
-// Extension defaults to ".html".
 func New(directory string, extension ...string) *SPLViews {
 	ext := ".html"
 	if len(extension) > 0 && extension[0] != "" {
@@ -79,34 +64,24 @@ func New(directory string, extension ...string) *SPLViews {
 	}
 }
 
-// Reload enables reloading templates from disk on every render.
-// Useful during development.
 func (v *SPLViews) Reload(enabled bool) *SPLViews {
 	v.reload = enabled
 	return v
 }
 
-// SSR enables server-side rendering with hydration for reactive features
-// (@signal, @reactive, @bind, @effect, on:click, etc.).
 func (v *SPLViews) SSR(enabled bool) *SPLViews {
 	v.ssr = enabled
 	return v
 }
 
-// HydrationRuntimeURL configures the engine to load the SPL hydration runtime
-// from an external URL instead of inlining it on every page.
 func (v *SPLViews) HydrationRuntimeURL(url string) *SPLViews {
 	v.engine.HydrationRuntimeURL = url
 	return v
 }
 
-// Load walks the views directory and pre-parses all template files
-// so the engine caches them for fast rendering.
-// Called once by Fiber at startup.
 func (v *SPLViews) Load() error {
 	v.engine.BaseDir = v.directory
 	v.engine.AutoEscape = true
-
 	return filepath.Walk(v.directory, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return err
@@ -114,29 +89,16 @@ func (v *SPLViews) Load() error {
 		if !strings.HasSuffix(path, v.extension) {
 			return nil
 		}
-		// Warm the engine's file cache by rendering with nil data.
-		// Errors are expected for templates that use @extends (they need
-		// data at render time), so we just ignore them here.
 		rel, _ := filepath.Rel(v.directory, path)
 		_, _ = v.engine.RenderFile(rel, nil)
 		return nil
 	})
 }
 
-// Render renders the named template into the writer.
-// binding is the template data (typically fiber.Map).
-// layout args are joined as the layout path (SPL uses @extends in templates,
-// so this is provided as a convenience override).
-//
-// This method satisfies the fiber.Views interface:
-//
-//	Render(io.Writer, string, interface{}, ...string) error
 func (v *SPLViews) Render(w io.Writer, name string, binding any, layout ...string) error {
 	if v.reload {
 		v.engine.InvalidateCaches()
 	}
-
-	// Convert binding to map[string]any.
 	data, ok := binding.(map[string]any)
 	if !ok {
 		if binding == nil {
@@ -147,27 +109,19 @@ func (v *SPLViews) Render(w io.Writer, name string, binding any, layout ...strin
 			return fmt.Errorf("spl: binding must be map[string]any or fiber.Map, got %T", binding)
 		}
 	}
-
-	// Merge engine globals into data.
 	for k, val := range v.engine.Globals {
 		if _, exists := data[k]; !exists {
 			data[k] = val
 		}
 	}
-
-	// Append extension if not present.
 	if !strings.HasSuffix(name, v.extension) {
 		name += v.extension
 	}
-
-	// If a layout was passed via Fiber's c.Render("view", data, "layouts/main"),
-	// wrap the template content with @extends.
 	if len(layout) > 0 && layout[0] != "" {
 		layoutName := layout[0]
 		if !strings.HasSuffix(layoutName, v.extension) {
 			layoutName += v.extension
 		}
-		// Read the template file and prepend @extends.
 		tmplPath := filepath.Join(v.directory, name)
 		content, err := os.ReadFile(tmplPath)
 		if err != nil {
@@ -186,7 +140,6 @@ func (v *SPLViews) Render(w io.Writer, name string, binding any, layout ...strin
 		_, err = io.WriteString(w, out)
 		return err
 	}
-
 	var out string
 	var err error
 	if v.ssr {
@@ -202,65 +155,48 @@ func (v *SPLViews) Render(w io.Writer, name string, binding any, layout ...strin
 }
 
 func main() {
-	// Create the SPL template engine pointing at the views directory.
 	engine := New("./views")
-	engine.Reload(true) // dev mode: re-read templates on each request
-	engine.SSR(true)    // enable reactive hydration (@signal, @reactive, etc.)
+	engine.Reload(true)
+	engine.SSR(true)
 	engine.engine.SecureMode = true
 
-	// Serve the SPL hydration runtime as a cacheable static file.
 	runtimeVersion := runtimeAssetVersion(engine.engine.RuntimeJS())
 	engine.HydrationRuntimeURL("/static/spl-runtime.min.js?v=" + runtimeVersion)
 
-	// Set global variables available in all templates.
 	engine.engine.Globals["siteName"] = "SPL Fiber Demo"
 
-	// Create Fiber app with SPL as the view engine.
-	app := fiber.New(fiber.Config{
-		Views: engine,
-	})
+	app := fiber.New(fiber.Config{Views: engine})
 
 	app.Use(func(c fiber.Ctx) error {
-		c.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
-		c.Set("Referrer-Policy", "no-referrer")
+		c.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'")
 		c.Set("X-Content-Type-Options", "nosniff")
 		c.Set("X-Frame-Options", "DENY")
-		c.Set("Permissions-Policy", "camera=(), geolocation=(), microphone=()")
-		c.Set("Cross-Origin-Opener-Policy", "same-origin")
 		return c.Next()
 	})
 
-	// Serve the SPL hydration runtime JS with aggressive caching.
 	app.Get("/static/spl-runtime.min.js", func(c fiber.Ctx) error {
 		c.Set("Content-Type", "application/javascript")
 		c.Set("Cache-Control", "public, max-age=31536000, immutable")
 		return c.SendString(engine.engine.RuntimeJS())
 	})
 
-	// --- Routes ---
-
 	app.Get("/", func(c fiber.Ctx) error {
 		return c.Render("index", fiber.Map{
-			"title": "SPL Template Engine — Interactive Demo",
+			"title": "SPL Template Engine &mdash; Fiber Demo",
 			"countries": []Country{
 				{Code: "us", Name: "United States", Region: "Americas"},
 				{Code: "uk", Name: "United Kingdom", Region: "Europe"},
 				{Code: "ca", Name: "Canada", Region: "Americas"},
 				{Code: "au", Name: "Australia", Region: "Oceania"},
 				{Code: "de", Name: "Germany", Region: "Europe"},
-				{Code: "fr", Name: "France", Region: "Europe"},
 				{Code: "jp", Name: "Japan", Region: "Asia"},
 				{Code: "in", Name: "India", Region: "Asia"},
-				{Code: "br", Name: "Brazil", Region: "Americas"},
-				{Code: "np", Name: "Nepal", Region: "Asia"},
 			},
 			"roles": []Role{
 				{Value: "developer", Label: "Developer", Permissions: []string{"read", "write", "deploy"}},
 				{Value: "designer", Label: "Designer", Permissions: []string{"read", "write"}},
 				{Value: "manager", Label: "Project Manager", Permissions: []string{"read", "write", "admin"}},
 				{Value: "devops", Label: "DevOps Engineer", Permissions: []string{"read", "write", "deploy", "admin"}},
-				{Value: "qa", Label: "QA Engineer", Permissions: []string{"read", "write", "test"}},
-				{Value: "admin", Label: "Administrator", Permissions: []string{"read", "write", "deploy", "admin", "super"}},
 			},
 			"priorities": []Priority{PriorityLow, PriorityMedium, PriorityHigh, PriorityCritical},
 			"config": FormConfig{
@@ -278,32 +214,10 @@ func main() {
 		})
 	})
 
-	// --- API Endpoints for Forms page ---
-
 	app.Post("/api/submit", func(c fiber.Ctx) error {
 		var payload map[string]any
 		if err := c.Bind().JSON(&payload); err != nil {
 			return c.Status(400).JSON(fiber.Map{"error": "Invalid JSON", "success": false})
-		}
-		// Simulate server-side validation
-		personal, _ := payload["personal"].(map[string]any)
-		errors := []string{}
-		if personal != nil {
-			if email, _ := personal["email"].(string); email == "" {
-				errors = append(errors, "Email is required")
-			}
-			if firstName, _ := personal["firstName"].(string); firstName == "" {
-				errors = append(errors, "First name is required")
-			}
-		} else {
-			errors = append(errors, "Personal information is missing")
-		}
-		if len(errors) > 0 {
-			return c.Status(422).JSON(fiber.Map{
-				"success": false,
-				"errors":  errors,
-				"message": "Validation failed",
-			})
 		}
 		return c.JSON(fiber.Map{
 			"success":   true,
@@ -321,14 +235,11 @@ func main() {
 			{"text": "First, solve the problem. Then, write the code.", "author": "John Johnson"},
 			{"text": "Simplicity is the soul of efficiency.", "author": "Austin Freeman"},
 			{"text": "Make it work, make it right, make it fast.", "author": "Kent Beck"},
-			{"text": "Talk is cheap. Show me the code.", "author": "Linus Torvalds"},
 		}
 		idx := quoteIdx % len(quotes)
 		quoteIdx++
 		return c.JSON(quotes[idx])
 	})
-
-	// --- TODO CRUD API (showcase tab) ---
 
 	var (
 		todoMu     sync.Mutex
@@ -353,20 +264,19 @@ func main() {
 		}
 		todoMu.Lock()
 		todoNextID++
-		todo := map[string]any{
+		todos = append(todos, map[string]any{
 			"id":       todoNextID,
 			"title":    form["title"],
 			"priority": form["priority"],
 			"notes":    form["notes"],
-		}
-		todos = append(todos, todo)
+		})
 		list := make([]map[string]any, len(todos))
 		copy(list, todos)
 		todoMu.Unlock()
 		return c.Status(201).JSON(list)
 	})
 
-	log.Println("SPL Fiber demo listening on http://localhost:3000")
+	log.Println("SPL Fiber demo on http://localhost:3000")
 	log.Fatal(app.Listen(":3000"))
 }
 

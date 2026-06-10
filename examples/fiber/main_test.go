@@ -7,7 +7,7 @@ import (
 
 func demoRenderData() map[string]any {
 	return map[string]any{
-		"title": "SPL Template Engine - Interactive Demo",
+		"title": "SPL Template Engine &mdash; Fiber Demo",
 		"countries": []Country{
 			{Code: "us", Name: "United States", Region: "Americas"},
 			{Code: "uk", Name: "United Kingdom", Region: "Europe"},
@@ -38,18 +38,16 @@ func TestFiberDemoRendersContent(t *testing.T) {
 	if err := engine.Load(); err != nil {
 		t.Fatalf("load views: %v", err)
 	}
-
 	var out strings.Builder
 	if err := engine.Render(&out, "index", demoRenderData()); err != nil {
 		t.Fatalf("render index: %v", err)
 	}
-
 	html := out.String()
-	if !strings.Contains(html, "Personal Information") {
-		t.Fatalf("expected rendered tab content, got %q", html)
+	if !strings.Contains(html, "Forms") {
+		t.Fatalf("expected tab content, got %q", html)
 	}
-	if !strings.Contains(html, "Inspirational Quote") {
-		t.Fatalf("expected demo section content, got %q", html)
+	if !strings.Contains(html, "Load Quote") {
+		t.Fatalf("expected quote section, got %q", html)
 	}
 	if !strings.Contains(html, "data-spl-hydration") {
 		t.Fatalf("expected hydration payload, got %q", html)
@@ -64,12 +62,10 @@ func TestFiberDemoRendersContentInSecureMode(t *testing.T) {
 	if err := engine.Load(); err != nil {
 		t.Fatalf("load views: %v", err)
 	}
-
 	var out strings.Builder
 	if err := engine.Render(&out, "index", demoRenderData()); err != nil {
 		t.Fatalf("render index in secure mode: %v", err)
 	}
-
 	html := out.String()
 	if !strings.Contains(html, "data-spl-hydration") {
 		t.Fatalf("expected hydration payload in secure mode, got %q", html)
