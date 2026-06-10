@@ -232,8 +232,15 @@ func (n *SchemaTableNode) nodeType() string { return "schema_table" }
 // --- Parser ---
 
 type parser struct {
-	src []rune
-	pos int
+	src       []rune
+	pos       int
+	delimLeft string // expression open delimiter (default "${")
+	delimRight string // expression close delimiter (default "}")
+}
+
+// defaultDelimiters returns the default expression delimiters.
+func defaultDelimiters() (string, string) {
+	return "${", "}"
 }
 
 // posInfo returns a "line:col" string for the current parser position for error messages.
@@ -261,8 +268,26 @@ func (p *parser) errorf(format string, args ...any) error {
 }
 
 func parse(src string) ([]Node, error) {
-	p := &parser{src: []rune(src)}
+	left, right := defaultDelimiters()
+	return parseWithDelims(src, left, right)
+}
+
+func parseWithDelims(src string, delimLeft, delimRight string) ([]Node, error) {
+	p := &parser{src: []rune(src), delimLeft: delimLeft, delimRight: delimRight}
 	return p.parseNodes(false)
+}
+
+// parseEngineDelims parses a template using the engine's configured delimiters.
+// Falls back to "${" / "}" if the engine's delimiters are not set.
+func (e *Engine) parseWithEngineDelims(src string) ([]Node, error) {
+	left, right := e.DelimLeft, e.DelimRight
+	if left == "" {
+		left = "${"
+	}
+	if right == "" {
+		right = "}"
+	}
+	return parseWithDelims(src, left, right)
 }
 
 func (p *parser) remaining() int { return len(p.src) - p.pos }
@@ -303,6 +328,16 @@ func (p *parser) advanceN(n int) {
 		p.pos = len(p.src)
 	}
 }
+// startsWithDelimLeft checks if the current position matches the configured left delimiter.
+func (p *parser) startsWithDelimLeft() bool {
+	return p.startsWith(p.delimLeft)
+}
+
+// startsWithDelimRight checks if the current position matches the configured right delimiter.
+func (p *parser) startsWithDelimRight() bool {
+	return p.startsWith(p.delimRight)
+}
+
 func (p *parser) skipWhitespace() {
 	for !p.eof() && (p.peek() == ' ' || p.peek() == '\t') {
 		p.advance()
@@ -328,7 +363,7 @@ func (p *parser) parseNodes(inBlock bool) ([]Node, error) {
 
 	for !p.eof() {
 		if textQuote != 0 {
-			if p.peek() == '$' && p.peekAt(1) == '{' {
+			if p.startsWithDelimLeft() {
 				flushText()
 				node, err := p.parseExpr()
 				if err != nil {
@@ -362,8 +397,8 @@ func (p *parser) parseNodes(inBlock bool) ([]Node, error) {
 			return nodes, nil
 		}
 
-		// Expression: ${...}
-		if p.peek() == '$' && p.peekAt(1) == '{' {
+		// Expression: ${...} or custom delimiters
+		if p.startsWithDelimLeft() {
 			flushText()
 			node, err := p.parseExpr()
 			if err != nil {
@@ -629,6 +664,14 @@ func (p *parser) parseNodes(inBlock bool) ([]Node, error) {
 				}
 				nodes = append(nodes, node)
 				continue
+			case "translate":
+				flushText()
+				node, err := p.parseTranslate()
+				if err != nil {
+					return nil, err
+				}
+				nodes = append(nodes, node)
+				continue
 			case "schema_form":
 				flushText()
 				node, err := p.parseSchemaForm()
@@ -883,32 +926,52 @@ func unwrapConditionalFragmentParens(fragment string) string {
 	return strings.TrimSpace(string(runes[1 : len(runes)-1]))
 }
 
-// parseExpr parses ${expr}, ${raw expr}, ${expr | filter}
+// parseExpr parses expression with configurable delimiters.
+// Default: ${expr}, ${raw expr}, ${expr | filter}
 func (p *parser) parseExpr() (*ExprNode, error) {
-	p.advanceN(2) // skip '${'
+	p.advanceN(len(p.delimLeft)) // skip left delimiter
 	var buf strings.Builder
-	depth := 1
-	for !p.eof() && depth > 0 {
-		ch := p.peek()
-		if ch == '{' {
-			depth++
-			buf.WriteRune(p.advance())
-		} else if ch == '}' {
-			depth--
-			if depth == 0 {
-				p.advance() // consume closing '}'
+	delimRight := p.delimRight
+
+	// For single-character right delimiters (like "}"), use depth-tracking.
+	// For multi-character delimiters, do exact match.
+	if len(delimRight) == 1 {
+		right := rune(delimRight[0])
+		depth := 1
+		for !p.eof() && depth > 0 {
+			ch := p.peek()
+			if ch == '{' {
+				depth++
+				buf.WriteRune(p.advance())
+			} else if ch == right {
+				depth--
+				if depth == 0 {
+					p.advance() // consume closing delimiter
+					break
+				}
+				buf.WriteRune(p.advance())
+			} else if ch == '"' || ch == '\'' || ch == '`' {
+				buf.WriteString(p.readStringLiteral())
+			} else {
+				buf.WriteRune(p.advance())
+			}
+		}
+		if depth != 0 {
+			return nil, p.errorf("unclosed expression %s...%s", p.delimLeft, p.delimRight)
+		}
+	} else {
+		// Multi-character right delimiter: look for exact match
+		for !p.eof() {
+			if p.startsWith(delimRight) {
+				p.advanceN(len(delimRight))
 				break
 			}
-			buf.WriteRune(p.advance())
-		} else if ch == '"' || ch == '\'' || ch == '`' {
-			// Read string literal to avoid counting braces inside strings
-			buf.WriteString(p.readStringLiteral())
-		} else {
-			buf.WriteRune(p.advance())
+			if p.peek() == '"' || p.peek() == '\'' || p.peek() == '`' {
+				buf.WriteString(p.readStringLiteral())
+			} else {
+				buf.WriteRune(p.advance())
+			}
 		}
-	}
-	if depth != 0 {
-		return nil, p.errorf("unclosed expression ${...}")
 	}
 
 	content := buf.String()

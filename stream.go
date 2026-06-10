@@ -67,7 +67,7 @@ func NewStreamRenderer(engine *Engine, data map[string]any) *StreamRenderer {
 // RenderStream renders template nodes to an io.Writer, streaming chunks.
 // Deferred sections are rendered after the main content is flushed.
 func (sr *StreamRenderer) RenderStream(w io.Writer, tmpl string) error {
-	nodes, err := parse(tmpl)
+	nodes, err := sr.engine.parseWithEngineDelims(tmpl)
 	if err != nil {
 		return fmt.Errorf("template parse error: %w", err)
 	}

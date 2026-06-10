@@ -3,7 +3,7 @@ VSCODE_EXTENSION_ID := oarkflow.oarkflow-template-vscode
 VSCODE_EXTENSION_INSTALL_DIR := $(HOME)/.vscode/extensions/$(VSCODE_EXTENSION_ID)
 VSCODE_CLI ?= code
 
-.PHONY: vscode-extension-check install-extension uninstall-old-spl-extension reload-vscode vscode-extension
+.PHONY: vscode-extension-check install-extension uninstall-old-spl-extension reload-vscode vscode-extension features
 
 vscode-extension-check:
 	cd $(VSCODE_EXTENSION_DIR) && npm run check
@@ -22,5 +22,8 @@ reload-vscode:
 	@$(VSCODE_CLI) --reuse-window .
 	@echo "VS Code CLI on this machine does not expose a reliable reload command."
 	@echo "Use Command Palette: Developer: Reload Window"
+
+features:
+	go run ./cmd/features
 
 vscode-extension: uninstall-old-spl-extension install-extension reload-vscode

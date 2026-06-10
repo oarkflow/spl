@@ -3,6 +3,7 @@ package spl
 import (
 	"fmt"
 	"io"
+	"io/fs"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -113,6 +114,9 @@ type CacheStats struct {
 // Engine is the main entry point for rendering SPL templates.
 type Engine struct {
 	BaseDir             string                          // directory for resolving includes/layouts
+	FS                  fs.FS                           // optional embedded filesystem for loading templates
+	DelimLeft           string                          // left interpolation delimiter (default: "${")
+	DelimRight          string                          // right interpolation delimiter (default: "}")
 	Filters             map[string]Filter               // registered filters
 	Globals             map[string]any                  // global template variables merged into every render
 	AutoEscape          bool                            // auto HTML-escape ${} output (default: true)
@@ -142,6 +146,16 @@ type Engine struct {
 	// Fast-path expression metadata cache
 	exprMeta map[string]exprFastPath // expression string → fast-path info
 
+	// Helpers holds user-registered functions callable from template expressions.
+	// Keys are function names, values are Go functions that accept and return any.
+	Helpers map[string]any
+
+	// Holds lifecycle hook registrations.
+	Hooks EngineHooks
+
+	// I18n configures internationalization for @translate directives.
+	I18n *I18nConfig
+
 	// Schema-driven UI generation
 	SchemaRegistry *SchemaRegistry
 }
@@ -162,6 +176,7 @@ func New() *Engine {
 		compiledFileCache: make(map[string]*compiledTemplate),
 		compiledTextCache: make(map[string]*compiledTemplate),
 		SecureMode:        false,
+		Helpers:           make(map[string]any),
 		mu:                &sync.RWMutex{},
 		SchemaRegistry:    NewSchemaRegistry(),
 	}
@@ -179,9 +194,77 @@ func (e *Engine) RegisterFilter(name string, fn Filter) {
 	e.mu.Unlock()
 }
 
+// RenderHook is a lifecycle hook called during template rendering.
+// The RenderContext provides information about the current render operation.
+type RenderContext struct {
+	// Template is the raw template string being rendered.
+	Template string
+	// Path is the file path if rendering from a file.
+	Path string
+	// Data is the merged template data (globals + caller data).
+	Data map[string]any
+	// Depth is the current nesting depth.
+	Depth int
+}
+
+// RenderHookFunc is a callback invoked during the render lifecycle.
+// Return an error to abort rendering.
+type RenderHookFunc func(ctx *RenderContext) error
+
+// EngineHooks holds lifecycle hook registration points.
+type EngineHooks struct {
+	// BeforeRender is called before each top-level render begins.
+	BeforeRender RenderHookFunc
+
+	// AfterRender is called after each top-level render completes successfully.
+	AfterRender RenderHookFunc
+
+	// BeforeTemplateLoad is called before a template file is loaded from disk or FS.
+	BeforeTemplateLoad RenderHookFunc
+
+	// OnError is called when a render error occurs.
+	OnError func(ctx *RenderContext, err error)
+}
+
+// HelperFunc is a function that can be registered via RegisterHelper and called
+// from template expressions. It receives natively converted Go values and returns
+// a value that will be converted back to an interpreter object.
+type HelperFunc func(args ...any) any
+
+// RegisterHelper registers a Go function that can be called from template expressions.
+// Helpers are invoked in expressions like: ${helperName(arg1, arg2)}
+// The function receives native Go values (string, float64, bool, map, slice, nil)
+// and should return a value that SPL can convert to an interpreter object.
+func (e *Engine) RegisterHelper(name string, fn HelperFunc) {
+	e.mu.Lock()
+	e.Helpers[name] = fn
+	e.mu.Unlock()
+}
+
+// injectHelpers sets up all registered helpers in the given environment.
+func (e *Engine) injectHelpers(env *interpreter.Environment) {
+	e.mu.RLock()
+	for name, fn := range e.Helpers {
+		// Capture fn in loop variable
+		helper := fn.(HelperFunc)
+		builtin := &interpreter.Builtin{
+			Fn: func(args ...interpreter.Object) interpreter.Object {
+				nativeArgs := make([]any, len(args))
+				for i, arg := range args {
+					nativeArgs[i] = objectToNative(arg)
+				}
+				result := helper(nativeArgs...)
+				return nativeToObject(result)
+			},
+		}
+		env.Set(name, builtin)
+	}
+	e.mu.RUnlock()
+}
+
 // RegisterComponent parses a component body and registers it by name.
 func (e *Engine) RegisterComponent(name string, body string) error {
-	nodes, err := parse(body)
+	nodes, err := e.parseWithEngineDelims(body)
 	if err != nil {
 		return fmt.Errorf("component %q parse error: %w", name, err)
 	}
@@ -210,16 +293,32 @@ func (e *Engine) newGlobalEnv() *interpreter.Environment {
 
 // Render parses and renders a template string with the given data.
 func (e *Engine) Render(tmpl string, data map[string]any) (string, error) {
+	if e.Hooks.BeforeRender != nil {
+		if err := e.Hooks.BeforeRender(&RenderContext{Template: tmpl, Data: data}); err != nil {
+			return "", fmt.Errorf("before render hook: %w", err)
+		}
+	}
 	compiled, err := e.compileStringTemplate(tmpl)
 	if err != nil {
 		return "", fmt.Errorf("template parse error: %w", err)
 	}
 	out, err := e.renderCompiled(compiled, data, e.hydration)
 	if err != nil {
+		if e.Hooks.OnError != nil {
+			e.Hooks.OnError(&RenderContext{Template: tmpl, Data: data}, err)
+		}
 		return "", err
 	}
 	if err := e.ensureSecureRenderedHTML(out); err != nil {
+		if e.Hooks.OnError != nil {
+			e.Hooks.OnError(&RenderContext{Template: tmpl, Data: data}, err)
+		}
 		return "", err
+	}
+	if e.Hooks.AfterRender != nil {
+		if err := e.Hooks.AfterRender(&RenderContext{Template: tmpl, Data: data}); err != nil {
+			return "", fmt.Errorf("after render hook: %w", err)
+		}
 	}
 	return out, nil
 }
@@ -230,16 +329,37 @@ func (e *Engine) RenderFile(path string, data map[string]any) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("template file error (%s): %w", path, err)
 	}
+	if e.Hooks.BeforeTemplateLoad != nil {
+		if err := e.Hooks.BeforeTemplateLoad(&RenderContext{Path: resolved, Data: data}); err != nil {
+			return "", fmt.Errorf("before template load hook: %w", err)
+		}
+	}
+	if e.Hooks.BeforeRender != nil {
+		if err := e.Hooks.BeforeRender(&RenderContext{Path: resolved, Data: data}); err != nil {
+			return "", fmt.Errorf("before render hook: %w", err)
+		}
+	}
 	compiled, err := e.compileFileTemplate(resolved)
 	if err != nil {
 		return "", fmt.Errorf("template file error (%s): %w", path, err)
 	}
 	out, err := e.renderCompiled(compiled, data, e.hydration)
 	if err != nil {
+		if e.Hooks.OnError != nil {
+			e.Hooks.OnError(&RenderContext{Path: resolved, Data: data}, err)
+		}
 		return "", err
 	}
 	if err := e.ensureSecureRenderedHTML(out); err != nil {
+		if e.Hooks.OnError != nil {
+			e.Hooks.OnError(&RenderContext{Path: resolved, Data: data}, err)
+		}
 		return "", err
+	}
+	if e.Hooks.AfterRender != nil {
+		if err := e.Hooks.AfterRender(&RenderContext{Path: resolved, Data: data}); err != nil {
+			return "", fmt.Errorf("after render hook: %w", err)
+		}
 	}
 	return out, nil
 }
@@ -311,6 +431,7 @@ func (e *Engine) CacheStats() CacheStats {
 }
 
 // loadFile reads and parses a template file, using the file cache.
+// When e.FS is set, files are read from the embedded filesystem.
 func (e *Engine) loadFile(resolved string) ([]Node, error) {
 	e.mu.RLock()
 	if nodes, ok := e.fileCache[resolved]; ok {
@@ -318,7 +439,13 @@ func (e *Engine) loadFile(resolved string) ([]Node, error) {
 		return nodes, nil
 	}
 	e.mu.RUnlock()
-	content, err := os.ReadFile(resolved)
+	var content []byte
+	var err error
+	if e.FS != nil {
+		content, err = fs.ReadFile(e.FS, resolved)
+	} else {
+		content, err = os.ReadFile(resolved)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -345,6 +472,7 @@ func (e *Engine) cloneForRender(state *hydrationState, components map[string]com
 	cloned.assetMode = ""
 	cloned.localSignalSeq = 0
 	cloned.localSignals = nil
+	cloned.injectHelpers(cloned.baseEnv)
 	return &cloned
 }
 
@@ -369,7 +497,7 @@ func (e *Engine) compileStringTemplate(tmpl string) (*compiledTemplate, error) {
 		return ct, nil
 	}
 	e.mu.RUnlock()
-	nodes, err := parse(tmpl)
+	nodes, err := e.parseWithEngineDelims(tmpl)
 	if err != nil {
 		return nil, err
 	}
@@ -491,6 +619,7 @@ func (e *Engine) renderCompiled(ct *compiledTemplate, data map[string]any, state
 	cloned.assetMode = ""
 	cloned.localSignalSeq = 0
 	cloned.localSignals = nil
+	cloned.injectHelpers(cloned.baseEnv)
 	out, err := (&cloned).renderNodes(ct.Nodes, data, 0)
 	if err != nil {
 		return "", err
@@ -530,6 +659,18 @@ func (e *Engine) resolvePath(path string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("template path is required")
 	}
+	cleanPath := filepath.Clean(path)
+	if filepath.IsAbs(cleanPath) {
+		return "", fmt.Errorf("absolute template paths are not allowed")
+	}
+	if e.FS != nil {
+		// When using an embedded filesystem, resolve relative to FS root
+		clean := filepath.ToSlash(cleanPath)
+		if strings.HasPrefix(clean, "../") || clean == ".." {
+			return "", fmt.Errorf("template path escapes filesystem")
+		}
+		return clean, nil
+	}
 	baseDir := e.BaseDir
 	if baseDir == "" {
 		baseDir = "."
@@ -537,10 +678,6 @@ func (e *Engine) resolvePath(path string) (string, error) {
 	baseAbs, err := filepath.Abs(baseDir)
 	if err != nil {
 		return "", fmt.Errorf("resolve base dir: %w", err)
-	}
-	cleanPath := filepath.Clean(path)
-	if filepath.IsAbs(cleanPath) {
-		return "", fmt.Errorf("absolute template paths are not allowed")
 	}
 	resolved := filepath.Join(baseAbs, cleanPath)
 	rel, err := filepath.Rel(baseAbs, resolved)
@@ -551,6 +688,119 @@ func (e *Engine) resolvePath(path string) (string, error) {
 		return "", fmt.Errorf("template path escapes base directory")
 	}
 	return resolved, nil
+}
+
+// resolveFSPath validates and cleans a template path for use with the embedded filesystem.
+func (e *Engine) resolveFSPath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("template path is required")
+	}
+	clean := filepath.ToSlash(filepath.Clean(path))
+	if strings.HasPrefix(clean, "../") || strings.HasPrefix(clean, "/") || clean == ".." {
+		return "", fmt.Errorf("invalid template path: %s", path)
+	}
+	return clean, nil
+}
+
+// loadFSFile reads and parses a template file from the embedded filesystem, using the file cache.
+func (e *Engine) loadFSFile(resolved string) ([]Node, error) {
+	e.mu.RLock()
+	if nodes, ok := e.fileCache[resolved]; ok {
+		e.mu.RUnlock()
+		return nodes, nil
+	}
+	e.mu.RUnlock()
+	content, err := fs.ReadFile(e.FS, resolved)
+	if err != nil {
+		return nil, err
+	}
+	nodes, err := e.parseWithEngineDelims(string(content))
+	if err != nil {
+		return nil, err
+	}
+	e.mu.Lock()
+	evictMap(e.fileCache, maxFileCacheSize)
+	e.fileCache[resolved] = nodes
+	e.mu.Unlock()
+	return nodes, nil
+}
+
+// compileFSFileTemplate compiles a template from the embedded filesystem.
+func (e *Engine) compileFSFileTemplate(resolved string) (*compiledTemplate, error) {
+	e.mu.RLock()
+	if ct, ok := e.compiledFileCache[resolved]; ok {
+		e.mu.RUnlock()
+		return ct, nil
+	}
+	e.mu.RUnlock()
+	nodes, err := e.loadFSFile(resolved)
+	if err != nil {
+		return nil, err
+	}
+	ct := e.buildCompiledTemplate(nodes)
+	e.mu.Lock()
+	if existing, ok := e.compiledFileCache[resolved]; ok {
+		e.mu.Unlock()
+		return existing, nil
+	}
+	evictMap(e.compiledFileCache, maxCompiledFileCacheSize)
+	e.compiledFileCache[resolved] = ct
+	e.mu.Unlock()
+	return ct, nil
+}
+
+// RenderFSFile renders a template from the embedded filesystem (e.FS) with the given data.
+// The path is resolved relative to the embedded filesystem root.
+func (e *Engine) RenderFSFile(path string, data map[string]any) (string, error) {
+	if e.FS == nil {
+		return "", fmt.Errorf("embedded filesystem not set (FS field is nil)")
+	}
+	resolved, err := e.resolveFSPath(path)
+	if err != nil {
+		return "", fmt.Errorf("template file error (%s): %w", path, err)
+	}
+	compiled, err := e.compileFSFileTemplate(resolved)
+	if err != nil {
+		return "", fmt.Errorf("template file error (%s): %w", path, err)
+	}
+	out, err := e.renderCompiled(compiled, data, e.hydration)
+	if err != nil {
+		return "", err
+	}
+	if err := e.ensureSecureRenderedHTML(out); err != nil {
+		return "", err
+	}
+	return out, nil
+}
+
+// RenderFSFileSSR renders a template from the embedded filesystem with SSR hydration.
+func (e *Engine) RenderFSFileSSR(path string, data map[string]any) (string, error) {
+	if e.FS == nil {
+		return "", fmt.Errorf("embedded filesystem not set (FS field is nil)")
+	}
+	resolved, err := e.resolveFSPath(path)
+	if err != nil {
+		return "", fmt.Errorf("template file error (%s): %w", path, err)
+	}
+	compiled, err := e.compileFSFileTemplate(resolved)
+	if err != nil {
+		return "", fmt.Errorf("template file error (%s): %w", path, err)
+	}
+	state := &hydrationState{Signals: make(map[string]any)}
+	renderer := e.cloneForRender(state, e.cloneRegisteredComponents())
+	out, err := renderer.renderCompiled(compiled, data, state)
+	if err != nil {
+		return "", err
+	}
+	if err := renderer.ensureSecureRenderedHTML(out); err != nil {
+		return "", err
+	}
+	out, err = renderer.prepareHydrationOutput(out)
+	if err != nil {
+		return "", err
+	}
+	return out + renderer.renderHydrationScript(out), nil
 }
 
 // mergeData returns a new map with globals as defaults, overridden by data.

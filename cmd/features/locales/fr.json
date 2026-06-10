@@ -1,0 +1,8 @@
+{
+  "welcome": "Bienvenue",
+  "welcome_user": "Bienvenue, {{name}}!",
+  "items_count.one": "1 article",
+  "items_count.other": "{{count}} articles",
+  "greeting": "Bonjour de SPL",
+  "goodbye": "Au revoir!"
+}

@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -38,6 +39,7 @@ func registerBuiltinFilters(e *Engine) {
 	e.Filters["padstart"] = filterPadStart
 	e.Filters["padend"] = filterPadEnd
 	e.Filters["wrap"] = filterWrap
+	e.Filters["date"] = filterDate
 }
 
 func filterUpper(val any, args ...string) string {
@@ -305,6 +307,60 @@ func filterWrap(val any, args ...string) string {
 		after = before
 	}
 	return before + s + after
+}
+
+// filterDate formats a date/time value.
+// Usage: ${value | date}                     → "2006-01-02 15:04:05" (default)
+//        ${value | date "Jan 2, 2006"}       → custom output format
+//        ${value | date "2006-01-02" "Jan 2"}→ parse input, format output
+// Value can be a unix timestamp (seconds), RFC3339 string, or Go time string.
+func filterDate(val any, args ...string) string {
+	s := str(val)
+	if s == "" {
+		return ""
+	}
+
+	var t time.Time
+	var err error
+
+	// Try parsing as unix timestamp (seconds)
+	if sec, parseErr := strconv.ParseInt(s, 10, 64); parseErr == nil {
+		t = time.Unix(sec, 0)
+	} else if f, parseErr := strconv.ParseFloat(s, 64); parseErr == nil {
+		sec, nsec := int64(f), int64((f-float64(int64(f)))*1e9)
+		t = time.Unix(sec, nsec)
+	} else if len(args) >= 2 {
+		// Input format provided as second arg
+		t, err = time.Parse(args[1], s)
+	} else {
+		// Try common formats
+		formats := []string{
+			time.RFC3339,
+			time.RFC3339Nano,
+			"2006-01-02T15:04:05",
+			"2006-01-02 15:04:05",
+			"2006-01-02",
+			"2006/01/02",
+			time.RFC1123,
+			time.RFC1123Z,
+		}
+		for _, fmt := range formats {
+			t, err = time.Parse(fmt, s)
+			if err == nil {
+				break
+			}
+		}
+	}
+
+	if err != nil || t.IsZero() {
+		return s
+	}
+
+	outputFormat := "2006-01-02 15:04:05"
+	if len(args) >= 1 && args[0] != "" {
+		outputFormat = args[0]
+	}
+	return t.Format(outputFormat)
 }
 
 // str converts any value to a string, optimized for common types.

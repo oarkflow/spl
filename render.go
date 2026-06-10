@@ -358,6 +358,9 @@ func (e *Engine) renderNode(n Node, env *interpreter.Environment, data map[strin
 		}
 		return "", nil
 
+	case *TranslateNode:
+		return e.renderTranslate(v, env, data, depth)
+
 	case *SchemaFormNode:
 		return e.renderSchemaForm(v, env)
 
@@ -1561,7 +1564,7 @@ func (e *Engine) renderSchemaForm(n *SchemaFormNode, env *interpreter.Environmen
 		dataSignal = signal
 	}
 	tmpl := schema.RenderFormSPL(n.SchemaName, data, prefix, dataSignal)
-	nodes, err := parse(tmpl)
+	nodes, err := e.parseWithEngineDelims(tmpl)
 	if err != nil {
 		return "", fmt.Errorf("@schema_form generated template: %w", err)
 	}
@@ -1630,7 +1633,7 @@ func (e *Engine) renderSchemaDetail(n *SchemaDetailNode, env *interpreter.Enviro
 	if e.hydration != nil {
 		if signal, ok := isSimpleSignalExpr(n.DataExpr); ok {
 			tmpl := schema.RenderDetailSPL(n.SchemaName, data, signal)
-			nodes, err := parse(tmpl)
+			nodes, err := e.parseWithEngineDelims(tmpl)
 			if err != nil {
 				return "", fmt.Errorf("@schema_detail generated template: %w", err)
 			}

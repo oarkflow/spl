@@ -22,7 +22,7 @@ type TemplateAnalysis struct {
 }
 
 func (e *Engine) ValidateTemplate(tmpl string) []TemplateDiagnostic {
-	if _, err := parse(tmpl); err != nil {
+	if _, err := e.parseWithEngineDelims(tmpl); err != nil {
 		line, col := diagnosticPosition(err.Error())
 		return []TemplateDiagnostic{{
 			Severity: "error",
@@ -35,7 +35,7 @@ func (e *Engine) ValidateTemplate(tmpl string) []TemplateDiagnostic {
 }
 
 func (e *Engine) AnalyzeTemplate(tmpl string) TemplateAnalysis {
-	nodes, err := parse(tmpl)
+	nodes, err := e.parseWithEngineDelims(tmpl)
 	if err != nil {
 		return TemplateAnalysis{Diagnostics: e.ValidateTemplate(tmpl)}
 	}
