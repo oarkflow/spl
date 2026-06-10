@@ -980,7 +980,7 @@ input, select, textarea { width: 100%; box-sizing: border-box; border: 1px solid
 			"category":    "Schema-Driven UI",
 			"description": "A contact form auto-generated from a JSON Schema definition. Uses @schema_form directive with validation attributes.",
 			"tags":        []string{"schema", "forms", "auto-ui"},
-			"schema": `{"contact":{"type":"object","title":"Contact Us","description":"Send us a message and we'll get back to you.","properties":{"name":{"type":"string","title":"Full Name","minLength":2,"maxLength":100,"description":"Your full name"},"email":{"type":"string","format":"email","title":"Email Address","description":"We'll never share your email"},"subject":{"type":"string","enum":["General Inquiry","Support","Feedback","Partnership"],"title":"Subject"},"message":{"type":"string","title":"Message","ui:widget":"textarea","ui:rows":6,"minLength":10,"description":"Tell us what's on your mind"},"subscribe":{"type":"boolean","title":"Subscribe to newsletter","description":"Get occasional updates about our product"}},"required":["name","email","message"]}}`,
+			"schema":      `{"contact":{"type":"object","title":"Contact Us","description":"Send us a message and we'll get back to you.","properties":{"name":{"type":"string","title":"Full Name","minLength":2,"maxLength":100,"description":"Your full name"},"email":{"type":"string","format":"email","title":"Email Address","description":"We'll never share your email"},"subject":{"type":"string","enum":["General Inquiry","Support","Feedback","Partnership"],"title":"Subject"},"message":{"type":"string","title":"Message","ui":{"widget":"textarea","rows":6},"minLength":10,"description":"Tell us what's on your mind"},"subscribe":{"type":"boolean","title":"Subscribe to newsletter","description":"Get occasional updates about our product"}},"required":["name","email","message"]}}`,
 			"template": `<style>
 .schema-demo { font-family: ui-sans-serif, system-ui, sans-serif; max-width: 40rem; margin: 1rem auto; color: #172033; }
 .intro { margin-bottom: 1rem; }
@@ -1025,6 +1025,63 @@ textarea.spl-schema-input { resize: vertical; }
   @schema_detail("contact", contactData)
 </div>`,
 			"data": `{"contactData": {"name": "Alice Johnson", "email": "alice@example.com", "subject": "General Inquiry", "message": "I'd like to learn more about your services.", "subscribe": true}}`,
+		},
+		{
+			"name":        "schema-complex-profile",
+			"label":       "Complex Schema Profile Builder",
+			"category":    "Schema-Driven UI",
+			"description": "A schema-generated profile editor with nested objects, scalar arrays, arrays of objects, nested arrays, and add/remove/reorder controls.",
+			"tags":        []string{"schema", "forms", "arrays", "nested", "reactive"},
+			"schema":      `{"profile":{"type":"object","title":"Profile Builder","description":"Edit a profile with nested address data, tags, contacts, and nested phone arrays.","properties":{"identity":{"type":"object","title":"Identity","properties":{"name":{"type":"string","title":"Display Name","minLength":2},"role":{"type":"string","title":"Role","enum":["Designer","Engineer","Manager","Researcher"]},"active":{"type":"boolean","title":"Active profile"}},"required":["name"]},"address":{"type":"object","title":"Address","properties":{"street":{"type":"string","title":"Street"},"city":{"type":"string","title":"City"},"region":{"type":"string","title":"Region"},"postalCode":{"type":"string","title":"Postal Code"}},"required":["street","city"]},"tags":{"type":"array","title":"Tags","description":"Scalar array with explicit action buttons and a maximum of five entries.","minItems":1,"maxItems":5,"ui":{"options":{"minItemsMessage":"Keep at least one tag.","maxItemsMessage":"You can add up to five tags.","emptyMessage":"No tags yet.","actions":[{"label":"Add tag","action":"add","scope":"array","value":"new-tag"},{"label":"Delete tag","action":"remove","scope":"item"}]}},"items":{"type":"string","title":"Tag","default":"new-tag"}},"contacts":{"type":"array","title":"Contacts","description":"Array of objects with custom add buttons, reorder controls, and a nested phones array.","maxItems":4,"ui":{"options":{"maxItemsMessage":"Four contacts is the limit for this demo.","actions":[{"label":"Add email contact","action":"add","scope":"array","value":{"kind":"Email","value":"new@example.com","primary":false,"phones":[]}},{"label":"Add phone contact","action":"add","scope":"array","value":{"kind":"Phone","value":"+1-555-0100","primary":false,"phones":["+1-555-0100"]}},{"label":"Earlier","action":"moveUp","scope":"item"},{"label":"Later","action":"moveDown","scope":"item"},{"label":"Delete","action":"remove","scope":"item"}]}},"items":{"type":"object","title":"Contact","properties":{"kind":{"type":"string","title":"Kind","enum":["Email","Phone","Chat"]},"value":{"type":"string","title":"Value","default":"new@example.com"},"primary":{"type":"boolean","title":"Primary"},"phones":{"type":"array","title":"Phone Numbers","minItems":1,"maxItems":3,"ui":{"options":{"minItemsMessage":"Each contact keeps at least one phone row.","maxItemsMessage":"Only three phone rows are allowed.","actions":[{"label":"Add phone","action":"add","scope":"array","value":"+1-555-0100"},{"label":"Remove phone","action":"remove","scope":"item"}]}},"items":{"type":"string","title":"Phone","default":"+1-555-0100"}}},"required":["kind","value"]}}},"required":["identity","address"]}}`,
+			"template": `<style>
+.complex-schema { font-family: ui-sans-serif, system-ui, sans-serif; max-width: 58rem; margin: 1rem auto; color: #172033; }
+.complex-schema .intro { margin-bottom: 1rem; }
+.complex-schema h2 { margin: 0 0 0.25rem; }
+.complex-schema p { color: #58677a; }
+.complex-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(18rem, 0.75fr); gap: 1.25rem; align-items: start; }
+.spl-schema-form { display: grid; gap: 1rem; }
+.spl-schema-field { display: grid; gap: 0.35rem; }
+.spl-schema-label, .spl-schema-legend { font-weight: 700; font-size: 0.9rem; }
+.spl-schema-required { color: #dc2626; }
+.spl-schema-desc { color: #58677a; font-size: 0.82rem; margin: 0; }
+.spl-schema-input { width: 100%; box-sizing: border-box; border: 1px solid #cbd5e1; border-radius: 8px; padding: 0.65rem 0.75rem; font: inherit; background: white; }
+.spl-schema-input:focus { outline: 2px solid #0891b2; outline-offset: -1px; }
+.spl-schema-object { border: 1px solid #d7e0ea; border-radius: 8px; padding: 0.9rem; display: grid; gap: 0.75rem; }
+.spl-schema-array { border: 1px solid #d7e0ea; border-radius: 8px; padding: 0.85rem; display: grid; gap: 0.75rem; background: #fbfdff; }
+.spl-schema-array-head, .spl-schema-array-item-head, .spl-schema-actions { display: flex; gap: 0.75rem; align-items: center; justify-content: space-between; }
+.spl-schema-array-message { color: #0f766e; font-size: 0.82rem; font-weight: 700; }
+.spl-schema-array-items { display: grid; gap: 0.75rem; }
+.spl-schema-array-item { border: 1px solid #e2e8f0; border-radius: 8px; padding: 0.75rem; display: grid; gap: 0.65rem; background: white; }
+.spl-schema-array-item-actions { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.spl-schema-array button, .spl-schema-actions button { border: 1px solid #9db1c5; background: white; border-radius: 7px; padding: 0.45rem 0.65rem; cursor: pointer; }
+.spl-schema-submit { background: #0f766e !important; color: white; border-color: #0f766e !important; }
+.spl-schema-live { color: #0f766e; font-weight: 700; }
+.spl-schema-result, .live-json { white-space: pre-wrap; overflow: auto; background: #0f172a; color: #d1fae5; border-radius: 8px; padding: 0.85rem; font-size: 0.78rem; }
+.spl-schema-detail { display: grid; gap: 0.5rem; }
+.spl-schema-detail-row { display: grid; grid-template-columns: 8rem minmax(0, 1fr); gap: 0.75rem; padding: 0.35rem 0; border-bottom: 1px solid #e2e8f0; }
+.spl-schema-detail-label { font-weight: 700; color: #475569; }
+@media (max-width: 820px) { .complex-grid { grid-template-columns: 1fr; } }
+</style>
+<div class="complex-schema">
+  <header class="intro">
+    <h2>Complex Schema Profile Builder</h2>
+    <p>Nested objects, scalar arrays, object arrays, nested phone arrays, and schema-defined add/remove/reorder controls all bind to the same SPL signal.</p>
+  </header>
+
+  <div class="complex-grid">
+    <section>
+      @schema_form("profile", profileData)
+    </section>
+
+    <aside>
+      <h3>Reactive Detail View</h3>
+      @schema_detail("profile", profileData)
+      <h3>Live JSON</h3>
+      <pre class="live-json" data-spl-bind="profileData" data-spl-attr="textContent"></pre>
+    </aside>
+  </div>
+</div>`,
+			"data": `{"profileData":{"identity":{"name":"Mira Patel","role":"Engineer","active":true},"address":{"street":"42 Market Street","city":"Portland","region":"OR","postalCode":"97205"},"tags":["platform","templates"],"contacts":[{"kind":"Email","value":"mira@example.com","primary":true,"phones":["+1-555-0101"]},{"kind":"Chat","value":"mira.chat","primary":false,"phones":[]}]}}`,
 		},
 	}
 }

@@ -121,13 +121,13 @@ func TestSchemaValidation(t *testing.T) {
 
 func TestSchemaRenderFormHTML(t *testing.T) {
 	m := map[string]any{
-		"type": "object",
+		"type":  "object",
 		"title": "Contact Form",
 		"properties": map[string]any{
 			"name": map[string]any{
-				"type":        "string",
-				"title":       "Name",
-				"minLength":   float64(2),
+				"type":      "string",
+				"title":     "Name",
+				"minLength": float64(2),
 			},
 			"email": map[string]any{
 				"type":   "string",
@@ -135,18 +135,20 @@ func TestSchemaRenderFormHTML(t *testing.T) {
 				"title":  "Email",
 			},
 			"message": map[string]any{
-				"type":        "string",
-				"title":       "Message",
-				"ui:widget":   "textarea",
-				"ui:rows":     float64(6),
+				"type":  "string",
+				"title": "Message",
+				"ui": map[string]any{
+					"widget": "textarea",
+					"rows":   float64(6),
+				},
 			},
 			"subscribe": map[string]any{
 				"type":  "boolean",
 				"title": "Subscribe to newsletter",
 			},
 			"country": map[string]any{
-				"type": "string",
-				"enum": []any{"US", "CA", "UK", "AU"},
+				"type":  "string",
+				"enum":  []any{"US", "CA", "UK", "AU"},
 				"title": "Country",
 			},
 		},
@@ -185,14 +187,20 @@ func TestSchemaRenderFormHTML(t *testing.T) {
 	if !strings.Contains(html, "required") {
 		t.Fatal("expected required markers")
 	}
+	if s.Properties["message"].UI.Widget != "textarea" {
+		t.Fatal("expected nested ui.widget to be parsed")
+	}
+	if s.Properties["message"].UI.Rows != 6 {
+		t.Fatal("expected nested ui.rows to be parsed")
+	}
 }
 
 func TestSchemaRenderDetailHTML(t *testing.T) {
 	m := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"name": map[string]any{"type": "string", "title": "Name"},
-			"age":  map[string]any{"type": "integer", "title": "Age"},
+			"name":   map[string]any{"type": "string", "title": "Name"},
+			"age":    map[string]any{"type": "integer", "title": "Age"},
 			"active": map[string]any{"type": "boolean", "title": "Active"},
 		},
 	}
@@ -241,10 +249,10 @@ func TestSchemaRenderTableHTML(t *testing.T) {
 func TestSchemaFormDirective(t *testing.T) {
 	e := New()
 	schema, _ := schemaFromMap(map[string]any{
-		"type": "object",
+		"type":  "object",
 		"title": "Profile",
 		"properties": map[string]any{
-			"name": map[string]any{"type": "string", "title": "Name"},
+			"name":  map[string]any{"type": "string", "title": "Name"},
 			"email": map[string]any{"type": "string", "format": "email", "title": "Email"},
 		},
 		"required": []any{"name"},
@@ -262,6 +270,217 @@ func TestSchemaFormDirective(t *testing.T) {
 	}
 	if !strings.Contains(out, "Alice") {
 		t.Fatal("expected data value to appear")
+	}
+}
+
+func TestSchemaFormDirectiveSSRUsesSPLFeatures(t *testing.T) {
+	e := New()
+	schema, _ := schemaFromMap(map[string]any{
+		"type":        "object",
+		"title":       "Profile",
+		"description": "Edit your profile",
+		"properties": map[string]any{
+			"name":      map[string]any{"type": "string", "title": "Name", "minLength": float64(2)},
+			"email":     map[string]any{"type": "string", "format": "email", "title": "Email"},
+			"role":      map[string]any{"type": "string", "title": "Role", "enum": []any{"Admin", "Member"}},
+			"subscribe": map[string]any{"type": "boolean", "title": "Subscribe"},
+		},
+		"required": []any{"name", "email"},
+	})
+	e.SchemaRegistry.Register("profile", schema)
+
+	out, err := e.RenderSSR(`@schema_form("profile", data)`, map[string]any{
+		"data": map[string]any{
+			"name":      "Alice",
+			"email":     "alice@test.com",
+			"role":      "Member",
+			"subscribe": true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`<div class="spl-schema-form" role="form"`,
+		`type="button" data-spl-on-click="schemaProfile1Submit">Submit</button>`,
+		`data-spl-model="data.name"`,
+		`data-spl-model="data.subscribe"`,
+		`data-spl-on-click=`,
+		`data-spl-watch="text"`,
+		`data-spl-view=`,
+		`data-spl-effect=`,
+		`data-spl-hydration`,
+		`schemaProfile1Submit`,
+		`schemaProfile1Reset`,
+		`schemaProfile1Edit`,
+		`signal(\"data\")`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected SSR schema form to contain %q, got: %s", want, out)
+		}
+	}
+}
+
+func TestSchemaFormAndDetailShareReactiveDataSignal(t *testing.T) {
+	e := New()
+	schema, _ := schemaFromMap(map[string]any{
+		"type":  "object",
+		"title": "Contact",
+		"properties": map[string]any{
+			"name": map[string]any{"type": "string", "title": "Name"},
+			"message": map[string]any{
+				"type":  "string",
+				"title": "Message",
+				"ui":    map[string]any{"widget": "textarea", "rows": float64(3)},
+			},
+		},
+	})
+	e.SchemaRegistry.Register("contact", schema)
+
+	out, err := e.RenderSSR(`@schema_form("contact", contactData) @schema_detail("contact", contactData)`, map[string]any{
+		"contactData": map[string]any{"name": "Alice", "message": "Hello"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`data-spl-model="contactData.name"`,
+		`data-spl-model="contactData.message"`,
+		`<textarea`,
+		`data-spl-view=`,
+		`__SPL_SIGNAL__contactData.name__`,
+		`__SPL_SIGNAL__contactData.message__`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected shared reactive schema output to contain %q, got: %s", want, out)
+		}
+	}
+	if strings.Contains(out, `<form`) {
+		t.Fatal("reactive schema form should not emit a native form in sandboxed previews")
+	}
+}
+
+func TestSchemaComplexNestedObjectsAndArrayControlsSSR(t *testing.T) {
+	e := New()
+	schema, _ := schemaFromMap(map[string]any{
+		"type":  "object",
+		"title": "Profile",
+		"properties": map[string]any{
+			"address": map[string]any{
+				"type":  "object",
+				"title": "Address",
+				"properties": map[string]any{
+					"street": map[string]any{"type": "string", "title": "Street"},
+					"city":   map[string]any{"type": "string", "title": "City"},
+				},
+				"required": []any{"street"},
+			},
+			"tags": map[string]any{
+				"type":     "array",
+				"title":    "Tags",
+				"minItems": float64(1),
+				"maxItems": float64(3),
+				"ui": map[string]any{"options": map[string]any{
+					"minItemsMessage": "Keep at least one tag.",
+					"maxItemsMessage": "Only three tags.",
+					"actions": []any{
+						map[string]any{"label": "Add tag", "action": "add", "scope": "array", "value": "new-tag"},
+						map[string]any{"label": "Delete tag", "action": "remove", "scope": "item"},
+					},
+				}},
+				"items": map[string]any{"type": "string", "title": "Tag"},
+			},
+			"contacts": map[string]any{
+				"type":  "array",
+				"title": "Contacts",
+				"ui": map[string]any{"options": map[string]any{
+					"actions": []any{
+						map[string]any{"label": "Add email contact", "action": "add", "scope": "array", "value": map[string]any{"kind": "Email", "value": "new@example.com", "phones": []any{}}},
+						map[string]any{"label": "Add phone contact", "action": "add", "scope": "array", "value": map[string]any{"kind": "Phone", "value": "+1-555-0100", "phones": []any{"+1-555-0100"}}},
+						map[string]any{"label": "Earlier", "action": "moveUp", "scope": "item"},
+						map[string]any{"label": "Later", "action": "moveDown", "scope": "item"},
+						map[string]any{"label": "Delete", "action": "remove", "scope": "item"},
+					},
+				}},
+				"items": map[string]any{
+					"type":  "object",
+					"title": "Contact",
+					"properties": map[string]any{
+						"kind":   map[string]any{"type": "string", "enum": []any{"Email", "Phone"}, "title": "Kind"},
+						"value":  map[string]any{"type": "string", "title": "Value"},
+						"phones": map[string]any{"type": "array", "title": "Phones", "minItems": float64(1), "maxItems": float64(3), "ui": map[string]any{"options": map[string]any{"minItemsMessage": "Keep a phone row.", "maxItemsMessage": "Only three phones.", "actions": []any{map[string]any{"label": "Add phone", "action": "add", "scope": "array", "value": "+1-555-0100"}, map[string]any{"label": "Remove phone", "action": "remove", "scope": "item"}}}}, "items": map[string]any{"type": "string", "title": "Phone"}},
+					},
+					"required": []any{"value"},
+				},
+			},
+		},
+	})
+	e.SchemaRegistry.Register("profile", schema)
+
+	out, err := e.RenderSSR(`@schema_form("profile", profileData)`, map[string]any{
+		"profileData": map[string]any{
+			"address":  map[string]any{"street": "1 Main", "city": "Portland"},
+			"tags":     []any{"vip"},
+			"contacts": []any{map[string]any{"kind": "Email", "value": "a@example.com", "phones": []any{"555-0100"}}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`data-spl-model="profileData.address.street"`,
+		`data-spl-schema-array-path="profileData.tags"`,
+		`data-spl-schema-array-path="profileData.contacts"`,
+		`data-spl-schema-array-max="3"`,
+		`data-spl-schema-array-min-message="Keep at least one tag."`,
+		`data-spl-schema-array-max-message="Only three tags."`,
+		`Add tag`,
+		`data-spl-schema-array-value="&#34;new-tag&#34;"`,
+		`Delete tag`,
+		`Add email contact`,
+		`Add phone contact`,
+		`data-spl-schema-array-value="{&#34;kind&#34;:&#34;Email&#34;,&#34;phones&#34;:[],&#34;value&#34;:&#34;new@example.com&#34;}"`,
+		`Delete`,
+		`Earlier`,
+		`Later`,
+		`data-spl-schema-array-path="__SPL_ARRAY_PATH_0__.phones"`,
+		`data-spl-schema-array-min="1"`,
+		`data-spl-schema-array-max="3"`,
+		`data-spl-schema-array-min-message="Keep a phone row."`,
+		`data-spl-schema-array-max-message="Only three phones."`,
+		`Add phone`,
+		`Remove phone`,
+		`data-spl-model="__SPL_ARRAY_PATH_0__.value"`,
+		`data-spl-model="__SPL_ARRAY_PATH_1__"`,
+		`SPL.schemaArrayAction`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected complex schema output to contain %q, got: %s", want, out)
+		}
+	}
+	if strings.Contains(out, "window.SPL") {
+		t.Fatal("schema array handler should use the runtime SPL scope, not window.SPL")
+	}
+}
+
+func TestSchemaArrayRuntimeAllowsMissingMaxAndFindsContainerHost(t *testing.T) {
+	runtime := assembleRuntime(featAll, false, false)
+	for _, want := range []string{
+		`if(value==null || value===''){return fallback;}`,
+		`closest('[data-spl-schema-array="true"][data-spl-schema-array-path="'+path+'"]')`,
+		`while(arr.length<min)`,
+		`if(isFinite(max) && arr.length>max)`,
+		`removeButtons.forEach(function(removeButton){removeButton.disabled=arr.length<=min;});`,
+		`messageEl.textContent=message;`,
+		`selector='[id="'+SPL.escapeSelectorValue(active.id)+'"]'`,
+		`try{next=root.querySelector(snapshot.selector);}`,
+	} {
+		if !strings.Contains(runtime, want) {
+			t.Fatalf("expected schema array runtime to contain %q", want)
+		}
+	}
+	if strings.Contains(runtime, `selector='#'+active.id`) {
+		t.Fatal("focus capture should not build raw id selectors")
 	}
 }
 

@@ -24,7 +24,8 @@ const (
 	featAPI                                // patchAPI, apiParse, serializeForm
 	featConditionals                       // patchConditionals
 	featRefs                               // patchRefs (data-spl-ref element refs)
-	featAll          = featCore | featScope | featDebug | featFocus | featBindings | featEvents | featModels | featAPI | featConditionals | featRefs
+	featSchemaArrays                       // patchSchemaArrays + schemaArrayAction
+	featAll          = featCore | featScope | featDebug | featFocus | featBindings | featEvents | featModels | featAPI | featConditionals | featRefs | featSchemaArrays
 )
 
 // ---------------------------------------------------------------------------
@@ -145,7 +146,7 @@ SPL.writePath=function(path,value){
 };`
 
 // moduleScope: safe client action execution and event dispatch
-const moduleScope = `SPL.allowedPath=/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/;
+const moduleScope = `SPL.allowedPath=/^[A-Za-z_][A-Za-z0-9_]*(\.([A-Za-z_][A-Za-z0-9_]*|[0-9]+))*$/;
 SPL.normalizePath=function(path){
   if(typeof path!=='string'){return '';}
   path=path.trim();
@@ -451,20 +452,23 @@ SPL.getRenderStats=function(){
 const moduleDebugStub = `SPL.debugRecord=function(){};SPL.getRenderStats=function(){return {};};`
 
 // moduleFocus: focus capture/restore for re-renders
-const moduleFocus = `SPL.captureFocus=function(root){
+const moduleFocus = `SPL.escapeSelectorValue=function(value){
+  return String(value||'').replace(/\\/g,'\\\\').replace(/"/g,'\\"');
+};
+SPL.captureFocus=function(root){
   var active=document.activeElement;
   if(!active || !root || active===document.body){return null;}
   if(active!==root && !(root.contains && root.contains(active))){return null;}
   var selector='';
   if(active.id){
-    selector='#'+active.id;
+    selector='[id="'+SPL.escapeSelectorValue(active.id)+'"]';
   } else if(active.getAttribute){
     if(active.hasAttribute('data-spl-model')){
-      selector='[data-spl-model="'+active.getAttribute('data-spl-model')+'"]';
+      selector='[data-spl-model="'+SPL.escapeSelectorValue(active.getAttribute('data-spl-model'))+'"]';
     } else if(active.hasAttribute('data-spl-bind-value')){
-      selector='[data-spl-bind-value="'+active.getAttribute('data-spl-bind-value')+'"]';
+      selector='[data-spl-bind-value="'+SPL.escapeSelectorValue(active.getAttribute('data-spl-bind-value'))+'"]';
     } else if(active.name){
-      selector='[name="'+active.name+'"]';
+      selector='[name="'+SPL.escapeSelectorValue(active.name)+'"]';
     }
   }
   if(!selector){return null;}
@@ -477,7 +481,9 @@ const moduleFocus = `SPL.captureFocus=function(root){
 };
 SPL.restoreFocus=function(root,snapshot){
   if(!root || !snapshot || !snapshot.selector || !root.querySelector){return;}
-  var next=root.querySelector(snapshot.selector);
+  var next=null;
+  try{next=root.querySelector(snapshot.selector);}
+  catch(err){return;}
   if(!next || typeof next.focus!=='function'){return;}
   next.focus();
   if(snapshot.checked!==null && 'checked' in next){
@@ -604,6 +610,133 @@ const moduleModels = `SPL.patchModels=function(root){
   });
 };`
 
+const moduleSchemaArrays = `SPL.schemaArrayBool=function(value, fallback){
+  if(value==null || value===''){return fallback;}
+  return value==='true' || value===true;
+};
+SPL.schemaArrayNumber=function(value, fallback){
+  if(value==null || value===''){return fallback;}
+  var n=Number(value);
+  return isFinite(n)?n:fallback;
+};
+SPL.schemaArrayDefault=function(raw){
+  try{return JSON.parse(raw||'null');}
+  catch(err){return null;}
+};
+SPL.schemaArrayClone=function(value){
+  if(value==null){return value;}
+  return JSON.parse(JSON.stringify(value));
+};
+SPL.schemaArrayEnsureBounds=function(path,arr,min,max,defaultValue){
+  var changed=false;
+  if(!Array.isArray(arr)){arr=[];changed=true;}
+  arr=SPL.schemaArrayClone(arr)||[];
+  while(arr.length<min){
+    arr.push(SPL.schemaArrayClone(defaultValue));
+    changed=true;
+  }
+  if(isFinite(max) && arr.length>max){
+    arr=arr.slice(0,max);
+    changed=true;
+  }
+  if(changed){SPL.writeTarget(path,arr);}
+  return arr;
+};
+SPL.schemaArrayRenderHTML=function(template,path,index,total,min){
+  var levelMatch=template.match(/__SPL_ARRAY_INDEX_(\d+)__/);
+  var level=levelMatch?levelMatch[1]:'0';
+  var itemPath=path+'.'+index;
+  var removeDisabled=total<=min?' disabled':'';
+  var upDisabled=index<=0?' disabled':'';
+  var downDisabled=index>=total-1?' disabled':'';
+  return template
+    .replace(new RegExp('__SPL_ARRAY_PARENT_PATH_'+level+'__','g'),path)
+    .replace(new RegExp('__SPL_ARRAY_PATH_'+level+'__','g'),itemPath)
+    .replace(new RegExp('__SPL_ARRAY_INDEX_'+level+'__','g'),String(index))
+    .replace(new RegExp('__SPL_ARRAY_POSITION_'+level+'__','g'),String(index+1))
+    .replace(new RegExp('__SPL_ARRAY_REMOVE_DISABLED_'+level+'__','g'),removeDisabled)
+    .replace(new RegExp('__SPL_ARRAY_MOVE_UP_DISABLED_'+level+'__','g'),upDisabled)
+    .replace(new RegExp('__SPL_ARRAY_MOVE_DOWN_DISABLED_'+level+'__','g'),downDisabled);
+};
+SPL.patchSchemaArrays=function(root){
+  var hosts=(root.matches && root.matches('[data-spl-schema-array]'))?[root]:[];
+  hosts=hosts.concat(Array.from(root.querySelectorAll ? root.querySelectorAll('[data-spl-schema-array]') : []));
+  hosts.forEach(function(host){
+    if(host.__splArrayBinding){return;}
+    host.__splArrayBinding=true;
+    var path=host.getAttribute('data-spl-schema-array-path')||'';
+    var rootSignal=path.split('.')[0];
+    var templateEl=host.querySelector('template[data-spl-schema-array-template]');
+    var itemsEl=host.querySelector('.spl-schema-array-items');
+    if(!path || !rootSignal || !templateEl || !itemsEl){return;}
+    var template=templateEl.innerHTML||templateEl.textContent||'';
+    var min=SPL.schemaArrayNumber(host.getAttribute('data-spl-schema-array-min'),0);
+    var max=SPL.schemaArrayNumber(host.getAttribute('data-spl-schema-array-max'),Infinity);
+    var addable=SPL.schemaArrayBool(host.getAttribute('data-spl-schema-array-add'),true);
+    var defaultValue=SPL.schemaArrayDefault(host.getAttribute('data-spl-schema-array-default'));
+    var emptyMessage=host.getAttribute('data-spl-schema-array-empty-message')||'No items';
+    var minMessage=host.getAttribute('data-spl-schema-array-min-message')||'Minimum items reached';
+    var maxMessage=host.getAttribute('data-spl-schema-array-max-message')||'Maximum items reached';
+    var messageEl=host.querySelector('.spl-schema-array-message');
+    var render=function(){
+      var arr=SPL.readTarget(path);
+      arr=SPL.schemaArrayEnsureBounds(path,arr,min,max,defaultValue);
+      var html=arr.map(function(_,index){return SPL.schemaArrayRenderHTML(template,path,index,arr.length,min);}).join('');
+      var focusSnapshot=SPL.captureFocus(itemsEl);
+      itemsEl.innerHTML=html || '<div class="spl-schema-empty">No items</div>';
+      var addButtons=Array.from(host.querySelectorAll('[data-spl-schema-array-action="add"][data-spl-schema-array-path="'+path+'"]'));
+      addButtons.forEach(function(addButton){addButton.disabled=!addable || arr.length>=max;});
+      var removeButtons=Array.from(host.querySelectorAll('[data-spl-schema-array-action="remove"][data-spl-schema-array-path="'+path+'"]'));
+      removeButtons.forEach(function(removeButton){removeButton.disabled=arr.length<=min;});
+      if(messageEl){
+        var message='';
+        if(arr.length===0){message=emptyMessage;}
+        else if(isFinite(max) && arr.length>=max){message=maxMessage;}
+        else if(min>0 && arr.length<=min){message=minMessage;}
+        messageEl.textContent=message;
+        messageEl.hidden=!message;
+      }
+      SPL.patch(itemsEl);
+      SPL.restoreFocus(itemsEl,focusSnapshot);
+    };
+    render();
+    SPL.subscribe(rootSignal,render);
+  });
+};
+SPL.schemaArrayAction=function(element){
+  if(!element || !element.getAttribute){return;}
+  var action=element.getAttribute('data-spl-schema-array-action')||'';
+  var path=element.getAttribute('data-spl-schema-array-path')||'';
+  if(!action || !path){return;}
+  var host=(element.closest && element.closest('[data-spl-schema-array="true"][data-spl-schema-array-path="'+path+'"]')) || null;
+  var min=SPL.schemaArrayNumber(host && host.getAttribute('data-spl-schema-array-min'),0);
+  var max=SPL.schemaArrayNumber(host && host.getAttribute('data-spl-schema-array-max'),Infinity);
+  var arr=SPL.readTarget(path);
+  if(!Array.isArray(arr)){arr=[];}
+  arr=SPL.schemaArrayClone(arr)||[];
+  if(action==='add'){
+    if(arr.length>=max){return;}
+    var rawValue=element.getAttribute('data-spl-schema-array-value');
+    arr.push(rawValue!=null?SPL.schemaArrayDefault(rawValue):SPL.schemaArrayDefault(host && host.getAttribute('data-spl-schema-array-default')));
+  } else if(action==='remove'){
+    if(arr.length<=min){return;}
+    var removeIndex=Number(element.getAttribute('data-spl-schema-array-index'));
+    if(!isFinite(removeIndex) || removeIndex<0 || removeIndex>=arr.length){return;}
+    arr.splice(removeIndex,1);
+  } else if(action==='move'){
+    var index=Number(element.getAttribute('data-spl-schema-array-index'));
+    var direction=Number(element.getAttribute('data-spl-schema-array-direction'));
+    var next=index+direction;
+    if(!isFinite(index) || !isFinite(next) || next<0 || next>=arr.length){return;}
+    var tmp=arr[index];
+    arr[index]=arr[next];
+    arr[next]=tmp;
+  } else {
+    return;
+  }
+  SPL.writeTarget(path,arr);
+};`
+
 // moduleAPI: apiParse, serializeForm, patchAPI
 const moduleAPI = `SPL.apiParse=function(res, mode){
   if(mode==='json'){return res.json();}
@@ -612,16 +745,32 @@ const moduleAPI = `SPL.apiParse=function(res, mode){
   if(ct.indexOf('application/json')>=0){return res.json();}
   return res.text();
 };
+SPL.assignPath=function(target,path,value){
+  if(typeof path!=='string' || !path){return;}
+  var parts=path.split('.');
+  var cur=target;
+  for(var i=0;i<parts.length-1;i++){
+    var key=parts[i];
+    if(!key){return;}
+    if(cur[key]==null || typeof cur[key]!=='object' || Array.isArray(cur[key])){cur[key]={};}
+    cur=cur[key];
+  }
+  var last=parts[parts.length-1];
+  if(last){cur[last]=value;}
+};
 SPL.serializeForm=function(form){
   var payload={};
   if(!form){return payload;}
   Array.from(form.elements||[]).forEach(function(field){
     if(!field.name || field.disabled){return;}
+    var value;
     if((field.type==='checkbox' || field.type==='radio')){
-      payload[field.name]=Boolean(field.checked);
-      return;
+      value=Boolean(field.checked);
+    } else {
+      value=field.value;
     }
-    payload[field.name]=field.value;
+    if(field.name.indexOf('.')>=0){SPL.assignPath(payload,field.name,value);}
+    else{payload[field.name]=value;}
   });
   return payload;
 };
@@ -799,6 +948,7 @@ var splInternalProps = []string{
 	"bootPayload",
 	"captureFocus",
 	"debugRecord",
+	"escapeSelectorValue",
 	"executeActions",
 	"getRenderStats",
 	"normalizePath",
@@ -808,10 +958,17 @@ var splInternalProps = []string{
 	"patchEvents",
 	"patchModels",
 	"patchRefs",
+	"patchSchemaArrays",
 	"readBindingValue",
 	"readTarget",
 	"readPath",
 	"restoreFocus",
+	"schemaArrayBool",
+	"schemaArrayClone",
+	"schemaArrayDefault",
+	"schemaArrayEnsureBounds",
+	"schemaArrayNumber",
+	"schemaArrayRenderHTML",
 	"serializeForm",
 	"signalName",
 	"signalRef",
@@ -956,6 +1113,9 @@ func isWordChar(c byte) bool {
 // buildPatchFunction generates the SPL.patch function based on included features
 func buildPatchFunction(features jsFeature) string {
 	var calls []string
+	if features&featSchemaArrays != 0 {
+		calls = append(calls, "SPL.patchSchemaArrays(scope);")
+	}
 	if features&featBindings != 0 {
 		calls = append(calls, "SPL.patchBindings(scope);")
 	}
@@ -1023,6 +1183,10 @@ func assembleRuntime(features jsFeature, disableDebug bool, secureMode bool) str
 		sb.WriteString(moduleModels)
 		sb.WriteString("\n")
 	}
+	if features&featSchemaArrays != 0 {
+		sb.WriteString(moduleSchemaArrays)
+		sb.WriteString("\n")
+	}
 	if features&featAPI != 0 {
 		sb.WriteString(moduleAPI)
 		sb.WriteString("\n")
@@ -1072,6 +1236,9 @@ func detectFeatures(renderedHTML string, effects []hydrationEffect, views []hydr
 		}
 		if features&featModels == 0 && strings.Contains(src, "data-spl-model") {
 			features |= featModels
+		}
+		if features&featSchemaArrays == 0 && strings.Contains(src, "data-spl-schema-array") {
+			features |= featSchemaArrays | featModels | featEvents | featFocus
 		}
 		if features&featAPI == 0 && strings.Contains(src, "data-spl-api-") {
 			features |= featAPI

@@ -1376,7 +1376,62 @@ func (e *Engine) renderSchemaForm(n *SchemaFormNode, env *interpreter.Environmen
 	if data == nil {
 		data = make(map[string]any)
 	}
-	return schema.RenderFormHTML(n.SchemaName, data), nil
+	if e.hydration == nil {
+		return schema.RenderFormHTML(n.SchemaName, data), nil
+	}
+	prefix := e.nextSchemaFormPrefix(n.SchemaName)
+	dataSignal := prefix + "Data"
+	if signal, ok := isSimpleSignalExpr(n.DataExpr); ok {
+		dataSignal = signal
+	}
+	tmpl := schema.RenderFormSPL(n.SchemaName, data, prefix, dataSignal)
+	nodes, err := parse(tmpl)
+	if err != nil {
+		return "", fmt.Errorf("@schema_form generated template: %w", err)
+	}
+	for _, node := range nodes {
+		if comp, ok := node.(*ComponentNode); ok {
+			e.mu.Lock()
+			def := e.Components[comp.Name]
+			def.Body = comp.Body
+			def.Props = comp.Props
+			if !def.HasDynamicCSS {
+				def.HasDynamicCSS = bodyHasDynamicCSS(comp.Body)
+			}
+			e.Components[comp.Name] = def
+			e.mu.Unlock()
+		}
+	}
+	return e.renderBody(nodes, env, data, 0)
+}
+
+func (e *Engine) nextSchemaFormPrefix(schemaName string) string {
+	e.assetScopeSeq++
+	sanitized := sanitizeSchemaIdent(schemaName)
+	return fmt.Sprintf("schema%s%d", sanitized, e.assetScopeSeq)
+}
+
+func sanitizeSchemaIdent(name string) string {
+	var b strings.Builder
+	capNext := true
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			if b.Len() == 0 && r >= '0' && r <= '9' {
+				b.WriteByte('_')
+			}
+			if capNext && r >= 'a' && r <= 'z' {
+				r -= 'a' - 'A'
+			}
+			b.WriteRune(r)
+			capNext = false
+			continue
+		}
+		capNext = true
+	}
+	if b.Len() == 0 {
+		return "Form"
+	}
+	return b.String()
 }
 
 // renderSchemaDetail renders a @schema_detail node.
@@ -1395,6 +1450,16 @@ func (e *Engine) renderSchemaDetail(n *SchemaDetailNode, env *interpreter.Enviro
 	}
 	if data == nil {
 		data = make(map[string]any)
+	}
+	if e.hydration != nil {
+		if signal, ok := isSimpleSignalExpr(n.DataExpr); ok {
+			tmpl := schema.RenderDetailSPL(n.SchemaName, data, signal)
+			nodes, err := parse(tmpl)
+			if err != nil {
+				return "", fmt.Errorf("@schema_detail generated template: %w", err)
+			}
+			return e.renderBody(nodes, env, data, 0)
+		}
 	}
 	return schema.RenderDetailHTML(n.SchemaName, data), nil
 }
