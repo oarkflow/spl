@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	template "github.com/oarkflow/template"
+	template "github.com/oarkflow/spl"
 )
 
 func TestBuiltinExamplesRender(t *testing.T) {

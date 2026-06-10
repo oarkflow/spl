@@ -1,4 +1,4 @@
-module github.com/oarkflow/template
+module github.com/oarkflow/spl
 
 go 1.26.1
 

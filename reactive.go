@@ -1,4 +1,4 @@
-package template
+package spl
 
 import (
 	"encoding/json"

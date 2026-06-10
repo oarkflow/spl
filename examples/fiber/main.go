@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
-	"github.com/oarkflow/template"
+	template "github.com/oarkflow/spl"
 )
 
 type Country struct {

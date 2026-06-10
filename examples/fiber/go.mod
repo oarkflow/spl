@@ -1,10 +1,10 @@
-module github.com/oarkflow/template/examples/fiber
+module github.com/oarkflow/spl/examples/fiber
 
 go 1.26.1
 
 require (
 	github.com/gofiber/fiber/v3 v3.3.0
-	github.com/oarkflow/template v0.0.0
+	github.com/oarkflow/spl v0.0.0
 )
 
 require (
@@ -26,4 +26,4 @@ require (
 	golang.org/x/text v0.38.0 // indirect
 )
 
-replace github.com/oarkflow/template => ../..
+replace github.com/oarkflow/spl => ../..

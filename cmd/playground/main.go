@@ -27,7 +27,7 @@ import (
 	"syscall"
 	"time"
 
-	template "github.com/oarkflow/template"
+	template "github.com/oarkflow/spl"
 )
 
 //go:embed static/*
