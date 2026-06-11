@@ -39,18 +39,18 @@ var playgroundI18n = &template.I18nConfig{
 	Bundles: map[string]*template.TranslationBundle{
 		"en": {
 			Messages: map[string]string{
-				"greeting":         "Hello from SPL!",
-				"welcome":          "Welcome, {{name}}!",
-				"items_count":      "{{count}} item(s)",
-				"items_count.one":  "1 item",
+				"greeting":          "Hello from SPL!",
+				"welcome":           "Welcome, {{name}}!",
+				"items_count":       "{{count}} item(s)",
+				"items_count.one":   "1 item",
 				"items_count.other": "{{count}} items",
 			},
 		},
 		"fr": {
 			Messages: map[string]string{
-				"greeting":         "Bonjour depuis SPL !",
-				"welcome":          "Bienvenue, {{name}} !",
-				"items_count.one":  "1 article",
+				"greeting":          "Bonjour depuis SPL !",
+				"welcome":           "Bienvenue, {{name}} !",
+				"items_count.one":   "1 article",
 				"items_count.other": "{{count}} articles",
 			},
 		},
@@ -70,6 +70,18 @@ type renderResponse struct {
 	Error      string `json:"error"`
 	ErrorKind  string `json:"error_kind"`
 	DurationMS int64  `json:"duration_ms"`
+}
+
+func newPlaygroundRenderEngine(baseDir string) *template.Engine {
+	engine := template.New()
+	engine.BaseDir = baseDir
+	engine.AutoEscape = true
+	engine.SecureMode = false
+	engine.I18n = playgroundI18n
+	engine.CachePolicy = template.CachePolicy{
+		FragmentTTL: 30,
+	}
+	return engine
 }
 
 func builtinExamples() []map[string]any {
@@ -1180,7 +1192,7 @@ textarea.spl-schema-input { resize: vertical; }
 			"category": "Core Templates",
 			"tags":     []string{"date", "formatting"},
 			"template": "<h2>Date Filter</h2>\n<p>Default format: ${ts | date}</p>\n<p>Custom: ${ts | date \"Jan 2, 2006 15:04\"}</p>\n<p>Full date: ${ts | date \"Monday, January 2, 2006\"}</p>\n<p>Input parse: ${rfc | date \"2006-01-02\" \"Jan 2\"}</p>",
-			"data": `{"ts": 1749580000, "rfc": "2026-06-10T18:00:00Z"}`,
+			"data":     `{"ts": 1749580000, "rfc": "2026-06-10T18:00:00Z"}`,
 		},
 		{
 			"name":     "builtin-helpers",
@@ -1188,7 +1200,7 @@ textarea.spl-schema-input { resize: vertical; }
 			"category": "Core Templates",
 			"tags":     []string{"helpers", "functions", "slice", "json"},
 			"template": "<h2>Built-in Helper Functions</h2>\n<p>Items: ${items}</p>\n<p>Slice (first 2): ${slice(items, 0, 2)}</p>\n<p>First: ${first(items)}</p>\n<p>Last: ${last(items)}</p>\n<p>Length: ${length(items)}</p>\n<p>Has 'red': ${has(items, \"red\")}</p>\n<p>Join: ${join(items, \", \")}</p>\n<p>Upper: ${upper(\"hello\")}</p>\n<p>Lower: ${lower(\"WORLD\")}</p>\n<p>Defaults: ${defaults(missing, \"fallback\")}</p>\n<p>JSON: ${json(info)}</p>",
-			"data": `{"items": ["red", "green", "blue", "yellow"], "info": {"name": "Alice", "role": "admin", "active": true}, "missing": null}`,
+			"data":     `{"items": ["red", "green", "blue", "yellow"], "info": {"name": "Alice", "role": "admin", "active": true}, "missing": null}`,
 		},
 		{
 			"name":     "cache-directive",
@@ -1196,7 +1208,7 @@ textarea.spl-schema-input { resize: vertical; }
 			"category": "Advanced Templates",
 			"tags":     []string{"cache", "fragment", "performance"},
 			"template": "<h2>Fragment Caching</h2>\n<p>The block below caches its output for the engine's FragmentTTL (30s):</p>\n@cache(\"demo\", \"30\") {\n  <div style=\"border:1px solid #0891b2;border-radius:8px;padding:1rem;background:#f0f9ff\">\n    <p><strong>Cached fragment</strong></p>\n    <p>Generated at: ${now()}</p>\n    <p>Re-render within 30s to see the same timestamp.</p>\n  </div>\n}\n<p>Live (uncached): ${now()}</p>",
-			"data": `{}`,
+			"data":     `{}`,
 		},
 		{
 			"name":     "i18n-translate",
@@ -1204,7 +1216,7 @@ textarea.spl-schema-input { resize: vertical; }
 			"category": "Advanced Templates",
 			"tags":     []string{"i18n", "translate"},
 			"template": "<h2>i18n Translation</h2>\n<p>English: @translate(\"greeting\")</p>\n<p>French:  @translate(\"greeting\", \"fr\")</p>\n<p>Fallback: @translate(\"missing_key\") { <em>Fallback body</em> }</p>",
-			"data": `{}`,
+			"data":     `{}`,
 		},
 		{
 			"name":     "debug-filter",
@@ -1212,15 +1224,15 @@ textarea.spl-schema-input { resize: vertical; }
 			"category": "Core Templates",
 			"tags":     []string{"debug", "inspect"},
 			"template": "<h2>Debug Filter</h2>\n<p>Simple: ${name | debug}</p>\n<p>Labeled: ${name | debug \"username\"}</p>\n<p>Object: ${info | debug \"user_info\"}</p>",
-			"data": `{"name": "Alice", "info": {"role": "admin", "active": true}}`,
+			"data":     `{"name": "Alice", "info": {"role": "admin", "active": true}}`,
 		},
 		{
 			"name":     "prepend-append",
-			"label":    "@prepend / @append / @hasBlock",
+			"label":    "@block / @prepend / @append / @hasBlock / @parent",
 			"category": "Advanced Templates",
-			"tags":     []string{"prepend", "append", "inheritance"},
-			"template": "<h2>Template Inheritance</h2>\n<p>These directives render their body directly in standalone mode.</p>\n<p><b>prepend</b> adds content before a block, <b>append</b> adds after.</p>\n<p><b>hasBlock</b> checks if a define exists in the child template.</p>\n<h3>Standalone usage:</h3>\n@prepend(\"content\") {\n  <p>This is prepended content.</p>\n}\n@append(\"content\") {\n  <p>This is appended content.</p>\n}\n@hasBlock(\"test\") {\n  <p>hasBlock true</p>\n} @else {\n  <p>hasBlock false (no define in standalone mode)</p>\n}",
-			"data": `{}`,
+			"tags":     []string{"block", "prepend", "append", "hasBlock", "parent", "inheritance"},
+			"template": "<h2>Template Inheritance</h2>\n<section style=\"border:1px solid #d4d4d8;border-radius:8px;padding:1rem;margin:1rem 0\">\n@prepend(\"content\") {\n  <p><strong>Prepended:</strong> appears before the content block.</p>\n}\n@append(\"content\") {\n  <p><strong>Appended:</strong> appears after the content block.</p>\n}\n@block(\"content\") {\n  <p><strong>Block:</strong> default block content.</p>\n}\n</section>\n\n@define(\"sidebar\") {\n  <aside>Sidebar content exists.</aside>\n}\n\n@hasBlock(\"sidebar\") {\n  <p>hasBlock(\"sidebar\") is true.</p>\n} @else {\n  <p>hasBlock(\"sidebar\") is false.</p>\n}\n\n@hasBlock(\"missing\") {\n  <p>hasBlock(\"missing\") is true.</p>\n} @else {\n  <p>hasBlock(\"missing\") is false.</p>\n}\n\n<p><code>&#64;parent</code> can be used inside a layout child <code>&#64;define</code> to include the layout block's default body.</p>",
+			"data":     `{}`,
 		},
 	}
 }
@@ -1351,6 +1363,8 @@ func main() {
 	go startRateLimiterCleanup(rl, cfg.RateWindow)
 
 	mux := http.NewServeMux()
+	playgroundEngine := newPlaygroundRenderEngine(".")
+	var renderMu sync.Mutex
 
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -1424,14 +1438,12 @@ func main() {
 			return
 		}
 
-		engine := template.New()
+		renderMu.Lock()
+		defer renderMu.Unlock()
+
+		engine := playgroundEngine
 		engine.BaseDir = cwd
-		engine.AutoEscape = true
-		engine.SecureMode = false
-		engine.I18n = playgroundI18n
-		engine.CachePolicy = template.CachePolicy{
-			FragmentTTL: 30 * 1e9, // 30 seconds in nanoseconds
-		}
+		engine.SchemaRegistry = template.NewSchemaRegistry()
 		if userSchema != nil {
 			for name, schemaDef := range userSchema {
 				if schemaMap, ok := schemaDef.(map[string]any); ok {

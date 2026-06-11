@@ -164,6 +164,11 @@ type HasBlockNode struct {
 
 func (n *HasBlockNode) nodeType() string { return "hasBlock" }
 
+// ParentNode renders the default body of the current layout block.
+type ParentNode struct{}
+
+func (n *ParentNode) nodeType() string { return "parent" }
+
 // PropDef describes a single declared prop with optional alias, default, and ?-prefix optionality.
 type PropDef struct {
 	Name     string // external prop name (what the caller passes)
@@ -267,9 +272,9 @@ func (n *CacheNode) nodeType() string { return "cache" }
 // --- Parser ---
 
 type parser struct {
-	src       []rune
-	pos       int
-	delimLeft string // expression open delimiter (default "${")
+	src        []rune
+	pos        int
+	delimLeft  string // expression open delimiter (default "${")
 	delimRight string // expression close delimiter (default "}")
 }
 
@@ -363,6 +368,7 @@ func (p *parser) advanceN(n int) {
 		p.pos = len(p.src)
 	}
 }
+
 // startsWithDelimLeft checks if the current position matches the configured left delimiter.
 func (p *parser) startsWithDelimLeft() bool {
 	return p.startsWith(p.delimLeft)
@@ -385,6 +391,7 @@ func (p *parser) parseNodes(inBlock bool) ([]Node, error) {
 	var textBuf strings.Builder
 	var textQuote rune
 	var prevTextRune rune
+	var textInTag bool
 	// textBraceDepth tracks non-directive '{' encountered in plain text (e.g. CSS rules).
 	// A closing '}' only terminates the directive block when this depth is zero.
 	textBraceDepth := 0
@@ -579,6 +586,11 @@ func (p *parser) parseNodes(inBlock bool) ([]Node, error) {
 				}
 				nodes = append(nodes, node)
 				continue
+			case "parent":
+				flushText()
+				p.advanceN(7)
+				nodes = append(nodes, &ParentNode{})
+				continue
 			case "component":
 				flushText()
 				node, err := p.parseComponent()
@@ -770,7 +782,7 @@ func (p *parser) parseNodes(inBlock bool) ([]Node, error) {
 			}
 		}
 
-		if p.peek() == '"' || p.peek() == '\'' || p.peek() == '`' {
+		if textInTag && (p.peek() == '"' || p.peek() == '\'' || p.peek() == '`') {
 			ch := p.advance()
 			textQuote = ch
 			textBuf.WriteRune(ch)
@@ -784,6 +796,11 @@ func (p *parser) parseNodes(inBlock bool) ([]Node, error) {
 		// is not mistaken for the directive block terminator.
 		if inBlock && ch == '{' {
 			textBraceDepth++
+		}
+		if ch == '<' {
+			textInTag = true
+		} else if ch == '>' {
+			textInTag = false
 		}
 		textBuf.WriteRune(ch)
 		prevTextRune = ch

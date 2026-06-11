@@ -520,7 +520,7 @@ function buildSemanticTokens(document) {
   };
 
   for (const m of text.matchAll(/@\/\/.*$/gm)) push(m.index, m[0].length, "comment");
-  for (const m of text.matchAll(/@(if|elseif|else|for|empty|switch|case|default|match|raw|include|import|handler|extends|block|define|component|render|slot|fill|let|computed|watch|signal|bind|effect|reactive|click|stream|defer|lazy|fallback)\b/g)) {
+  for (const m of text.matchAll(/@(if|elseif|else|for|empty|switch|case|default|match|raw|include|import|handler|extends|block|define|parent|component|render|slot|fill|let|computed|watch|signal|bind|effect|reactive|click|stream|defer|lazy|fallback)\b/g)) {
     push(m.index, m[0].length, "keyword");
   }
   for (const m of text.matchAll(/\$\{[^}\n]*(?:\}|\n|$)/g)) {

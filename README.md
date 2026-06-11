@@ -385,6 +385,15 @@ engine.RegisterComponent("Alert", `<div class="alert alert-${type}">@slot</div>`
 }
 ```
 
+Use `@parent` inside a `@define` block to include the layout block's default body instead of fully replacing it:
+
+```html
+@define("content") {
+    <section class="intro">Custom intro</section>
+    @parent
+}
+```
+
 ### Includes & Imports
 
 #### `@include`

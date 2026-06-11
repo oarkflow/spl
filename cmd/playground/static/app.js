@@ -346,7 +346,7 @@ function initMonaco() {
         tokenizer: {
           root: [
             [/@\/\/.*$/, 'comment'],
-            [/@(if|elseif|else|for|empty|switch|case|default|raw|include|extends|block|define|component|render|slot|fill|let|computed|watch|signal|effect|reactive|bind|handler|import|cache|endcache|prepend|append|hasBlock|translate|local|schema_form|schema_detail)\b/, 'keyword'],
+            [/@(if|elseif|else|for|empty|switch|case|default|raw|include|extends|block|define|parent|component|render|slot|fill|let|computed|watch|signal|effect|reactive|bind|handler|import|cache|endcache|prepend|append|hasBlock|translate|local|schema_form|schema_detail)\b/, 'keyword'],
             [/\$\{/, { token: 'delimiter.bracket', next: '@expr' }],
             [/<\/?[\w-]+/, 'tag'],
             [/>/, 'tag'],

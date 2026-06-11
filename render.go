@@ -15,6 +15,19 @@ import (
 // Builder pool to reduce GC pressure from render allocations.
 var builderPool = sync.Pool{New: func() any { return &strings.Builder{} }}
 
+type blockModifierFlushNode struct {
+	Name string
+}
+
+func (n *blockModifierFlushNode) nodeType() string { return "blockModifierFlush" }
+
+type parentBlockContext struct {
+	body  []Node
+	env   *interpreter.Environment
+	data  map[string]any
+	depth int
+}
+
 func getBuilder() *strings.Builder {
 	b := builderPool.Get().(*strings.Builder)
 	b.Reset()
@@ -88,12 +101,12 @@ func (e *Engine) renderNodes(nodes []Node, data map[string]any, depth int) (stri
 		return "", fmt.Errorf("max include depth (%d) exceeded", e.MaxDepth)
 	}
 
-	// Fast pre-scan: check if any special directives (extends/define/component/import) exist.
+	// Fast pre-scan: check if any special directives exist.
 	// The vast majority of render calls have none, so we avoid allocating the defines map.
 	hasSpecial := false
 	for _, n := range nodes {
 		switch n.(type) {
-		case *ExtendsNode, *DefineNode, *ComponentNode, *ImportNode:
+		case *ExtendsNode, *DefineNode, *ComponentNode, *ImportNode, *PrependNode, *AppendNode, *HasBlockNode:
 			hasSpecial = true
 		}
 		if hasSpecial {
@@ -102,9 +115,23 @@ func (e *Engine) renderNodes(nodes []Node, data map[string]any, depth int) (stri
 	}
 
 	var regularNodes []Node
+	defines := map[string][]Node(nil)
+	prependContent := map[string][]Node(nil)
+	appendContent := map[string][]Node(nil)
+	var modifierNames []string
 	if hasSpecial {
 		var extendsPath string
-		defines := make(map[string][]Node)
+		defines = make(map[string][]Node)
+		prependContent = make(map[string][]Node)
+		appendContent = make(map[string][]Node)
+		blockNames := make(map[string]bool)
+		for _, n := range nodes {
+			if block, ok := n.(*BlockNode); ok {
+				blockNames[block.Name] = true
+			}
+		}
+		modifierSeen := make(map[string]bool)
+		modifierFlushSeen := make(map[string]bool)
 		regularNodes = make([]Node, 0, len(nodes))
 		for _, n := range nodes {
 			switch v := n.(type) {
@@ -114,6 +141,26 @@ func (e *Engine) renderNodes(nodes []Node, data map[string]any, depth int) (stri
 				continue
 			case *DefineNode:
 				defines[v.Name] = v.Body
+			case *PrependNode:
+				prependContent[v.Name] = append(prependContent[v.Name], v.Body...)
+				if !modifierSeen[v.Name] {
+					modifierSeen[v.Name] = true
+					modifierNames = append(modifierNames, v.Name)
+				}
+				if !blockNames[v.Name] && !modifierFlushSeen[v.Name] {
+					modifierFlushSeen[v.Name] = true
+					regularNodes = append(regularNodes, &blockModifierFlushNode{Name: v.Name})
+				}
+			case *AppendNode:
+				appendContent[v.Name] = append(appendContent[v.Name], v.Body...)
+				if !modifierSeen[v.Name] {
+					modifierSeen[v.Name] = true
+					modifierNames = append(modifierNames, v.Name)
+				}
+				if !blockNames[v.Name] && !modifierFlushSeen[v.Name] {
+					modifierFlushSeen[v.Name] = true
+					regularNodes = append(regularNodes, &blockModifierFlushNode{Name: v.Name})
+				}
 			case *ComponentNode:
 				e.mu.Lock()
 				def := e.Components[v.Name]
@@ -129,7 +176,7 @@ func (e *Engine) renderNodes(nodes []Node, data map[string]any, depth int) (stri
 			}
 		}
 		if extendsPath != "" {
-			return e.renderLayout(extendsPath, defines, data, depth)
+			return e.renderLayout(extendsPath, defines, prependContent, appendContent, data, depth)
 		}
 	} else {
 		regularNodes = nodes
@@ -173,17 +220,102 @@ func (e *Engine) renderNodes(nodes []Node, data map[string]any, depth int) (stri
 		}
 	}
 	for _, n := range regularNodes {
+		if block, ok := n.(*BlockNode); ok {
+			if preBody, hasPre := prependContent[block.Name]; hasPre {
+				for _, pn := range preBody {
+					s, err := e.renderNode(pn, env, data, depth)
+					if err != nil {
+						return "", err
+					}
+					buf.WriteString(s)
+				}
+				delete(prependContent, block.Name)
+			}
+			s, err := e.renderNode(block, env, data, depth)
+			if err != nil {
+				return "", err
+			}
+			buf.WriteString(s)
+			if appBody, hasApp := appendContent[block.Name]; hasApp {
+				for _, an := range appBody {
+					s, err := e.renderNode(an, env, data, depth)
+					if err != nil {
+						return "", err
+					}
+					buf.WriteString(s)
+				}
+				delete(appendContent, block.Name)
+			}
+			continue
+		}
+		if flush, ok := n.(*blockModifierFlushNode); ok {
+			if preBody, hasPre := prependContent[flush.Name]; hasPre {
+				for _, pn := range preBody {
+					s, err := e.renderNode(pn, env, data, depth)
+					if err != nil {
+						return "", err
+					}
+					buf.WriteString(s)
+				}
+				delete(prependContent, flush.Name)
+			}
+			if appBody, hasApp := appendContent[flush.Name]; hasApp {
+				for _, an := range appBody {
+					s, err := e.renderNode(an, env, data, depth)
+					if err != nil {
+						return "", err
+					}
+					buf.WriteString(s)
+				}
+				delete(appendContent, flush.Name)
+			}
+			continue
+		}
+		if hb, ok := n.(*HasBlockNode); ok {
+			body := hb.Else
+			if _, exists := defines[hb.Name]; exists {
+				body = hb.Body
+			}
+			for _, bn := range body {
+				s, err := e.renderNode(bn, env, data, depth)
+				if err != nil {
+					return "", err
+				}
+				buf.WriteString(s)
+			}
+			continue
+		}
 		s, err := e.renderNode(n, env, data, depth)
 		if err != nil {
 			return "", err
 		}
 		buf.WriteString(s)
 	}
+	for _, name := range modifierNames {
+		body := prependContent[name]
+		for _, pn := range body {
+			s, err := e.renderNode(pn, env, data, depth)
+			if err != nil {
+				return "", err
+			}
+			buf.WriteString(s)
+		}
+	}
+	for _, name := range modifierNames {
+		body := appendContent[name]
+		for _, an := range body {
+			s, err := e.renderNode(an, env, data, depth)
+			if err != nil {
+				return "", err
+			}
+			buf.WriteString(s)
+		}
+	}
 	return buf.String(), nil
 }
 
 // renderLayout handles @extends with @define blocks.
-func (e *Engine) renderLayout(layoutPath string, defines map[string][]Node, data map[string]any, depth int) (string, error) {
+func (e *Engine) renderLayout(layoutPath string, defines, childPrependContent, childAppendContent map[string][]Node, data map[string]any, depth int) (string, error) {
 	resolved, err := e.resolvePath(layoutPath)
 	if err != nil {
 		return "", fmt.Errorf("layout file error: %w", err)
@@ -206,16 +338,16 @@ func (e *Engine) renderLayout(layoutPath string, defines map[string][]Node, data
 		env.Set(k, toLazyObject(v))
 	}
 
-	// Pre-scan for prepend/append directives
-	prependContent := make(map[string][]Node)
-	appendContent := make(map[string][]Node)
+	// Pre-scan for layout-level prepend/append directives.
+	layoutPrependContent := make(map[string][]Node)
+	layoutAppendContent := make(map[string][]Node)
 	var regularNodes []Node
 	for _, n := range layoutNodes {
 		switch v := n.(type) {
 		case *PrependNode:
-			prependContent[v.Name] = v.Body
+			layoutPrependContent[v.Name] = append(layoutPrependContent[v.Name], v.Body...)
 		case *AppendNode:
-			appendContent[v.Name] = v.Body
+			layoutAppendContent[v.Name] = append(layoutAppendContent[v.Name], v.Body...)
 		default:
 			regularNodes = append(regularNodes, n)
 		}
@@ -235,7 +367,16 @@ func (e *Engine) renderLayout(layoutPath string, defines map[string][]Node, data
 					}
 				}
 				// Prepend content (if any)
-				if preBody, hasPre := prependContent[block.Name]; hasPre {
+				if preBody, hasPre := layoutPrependContent[block.Name]; hasPre {
+					for _, pn := range preBody {
+						s, err := e.renderNode(pn, env, data, depth+1)
+						if err != nil {
+							return "", err
+						}
+						buf.WriteString(s)
+					}
+				}
+				if preBody, hasPre := childPrependContent[block.Name]; hasPre {
 					for _, pn := range preBody {
 						s, err := e.renderNode(pn, env, data, depth+1)
 						if err != nil {
@@ -245,15 +386,32 @@ func (e *Engine) renderLayout(layoutPath string, defines map[string][]Node, data
 					}
 				}
 				// Define content
+				e.pushParentBlockContext(parentBlockContext{
+					body:  block.Body,
+					env:   env,
+					data:  data,
+					depth: depth + 1,
+				})
 				for _, dn := range defined {
 					s, err := e.renderNode(dn, env, data, depth+1)
 					if err != nil {
+						e.popParentBlockContext()
 						return "", err
 					}
 					buf.WriteString(s)
 				}
+				e.popParentBlockContext()
 				// Append content (if any)
-				if appBody, hasApp := appendContent[block.Name]; hasApp {
+				if appBody, hasApp := childAppendContent[block.Name]; hasApp {
+					for _, an := range appBody {
+						s, err := e.renderNode(an, env, data, depth+1)
+						if err != nil {
+							return "", err
+						}
+						buf.WriteString(s)
+					}
+				}
+				if appBody, hasApp := layoutAppendContent[block.Name]; hasApp {
 					for _, an := range appBody {
 						s, err := e.renderNode(an, env, data, depth+1)
 						if err != nil {
@@ -264,7 +422,16 @@ func (e *Engine) renderLayout(layoutPath string, defines map[string][]Node, data
 				}
 			} else {
 				// No define — render block's default body (with prepend/append)
-				if preBody, hasPre := prependContent[block.Name]; hasPre {
+				if preBody, hasPre := layoutPrependContent[block.Name]; hasPre {
+					for _, pn := range preBody {
+						s, err := e.renderNode(pn, env, data, depth+1)
+						if err != nil {
+							return "", err
+						}
+						buf.WriteString(s)
+					}
+				}
+				if preBody, hasPre := childPrependContent[block.Name]; hasPre {
 					for _, pn := range preBody {
 						s, err := e.renderNode(pn, env, data, depth+1)
 						if err != nil {
@@ -280,7 +447,16 @@ func (e *Engine) renderLayout(layoutPath string, defines map[string][]Node, data
 					}
 					buf.WriteString(s)
 				}
-				if appBody, hasApp := appendContent[block.Name]; hasApp {
+				if appBody, hasApp := childAppendContent[block.Name]; hasApp {
+					for _, an := range appBody {
+						s, err := e.renderNode(an, env, data, depth+1)
+						if err != nil {
+							return "", err
+						}
+						buf.WriteString(s)
+					}
+				}
+				if appBody, hasApp := layoutAppendContent[block.Name]; hasApp {
 					for _, an := range appBody {
 						s, err := e.renderNode(an, env, data, depth+1)
 						if err != nil {
@@ -363,16 +539,23 @@ func (e *Engine) renderNode(n Node, env *interpreter.Environment, data map[strin
 		return e.renderBody(v.Body, env, data, depth)
 
 	case *PrependNode:
-		// When encountered outside of layout context, render body directly
-		return e.renderBody(v.Body, env, data, depth)
+		// Top-level standalone prepends are collected by renderNodes.
+		return "", nil
 
 	case *AppendNode:
-		// When encountered outside of layout context, render body directly
-		return e.renderBody(v.Body, env, data, depth)
+		// Top-level standalone appends are collected by renderNodes.
+		return "", nil
 
 	case *HasBlockNode:
-		// When encountered outside of layout context, render body
-		return e.renderBody(v.Body, env, data, depth)
+		// Top-level standalone hasBlock directives are evaluated by renderNodes.
+		return e.renderBody(v.Else, env, data, depth)
+
+	case *ParentNode:
+		parent, ok := e.currentParentBlockContext()
+		if !ok {
+			return "", nil
+		}
+		return e.renderBody(parent.body, parent.env, parent.data, parent.depth)
 
 	case *RenderNode:
 		return e.renderRender(v, env, data, depth)
@@ -963,6 +1146,21 @@ func (e *Engine) currentSlotContext() *slotContext {
 		return nil
 	}
 	return e.slotStack[len(e.slotStack)-1]
+}
+
+func (e *Engine) pushParentBlockContext(ctx parentBlockContext) {
+	e.parentBlockStack = append(e.parentBlockStack, ctx)
+}
+
+func (e *Engine) popParentBlockContext() {
+	e.parentBlockStack = e.parentBlockStack[:len(e.parentBlockStack)-1]
+}
+
+func (e *Engine) currentParentBlockContext() (parentBlockContext, bool) {
+	if len(e.parentBlockStack) == 0 {
+		return parentBlockContext{}, false
+	}
+	return e.parentBlockStack[len(e.parentBlockStack)-1], true
 }
 
 func (e *Engine) renderRender(n *RenderNode, env *interpreter.Environment, data map[string]any, depth int) (string, error) {

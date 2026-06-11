@@ -506,6 +506,173 @@ func TestLayoutDefaultBlock(t *testing.T) {
 	}
 }
 
+func TestStandaloneBlockModifiersWrapBlock(t *testing.T) {
+	e := New()
+	e.AutoEscape = false
+
+	out, err := e.Render(`@append("content") {after}@block("content") {middle}@prepend("content") {before}`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "beforemiddleafter" {
+		t.Fatalf("unexpected: %q", out)
+	}
+}
+
+func TestStandaloneOrphanBlockModifiersRenderPrependBeforeAppend(t *testing.T) {
+	e := New()
+	e.AutoEscape = false
+
+	out, err := e.Render(`@append("content") {after}@prepend("content") {before}@hasBlock("test") {true} @else {false}`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(out) != "beforeafterfalse" {
+		t.Fatalf("unexpected: %q", out)
+	}
+}
+
+func TestLayoutBlockModifiersAccumulate(t *testing.T) {
+	dir := t.TempDir()
+	layout := filepath.Join(dir, "layout.html")
+	os.WriteFile(layout, []byte(`@prepend("content") {before-1 }@prepend("content") {before-2 }@block("content") {fallback}@append("content") { after-1}@append("content") { after-2}`), 0644)
+
+	page := `@extends("layout.html")
+@define("content") {middle}`
+
+	e := New()
+	e.BaseDir = dir
+	e.AutoEscape = false
+	out, err := e.Render(page, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "before-1 before-2 middle after-1 after-2" {
+		t.Fatalf("unexpected: %q", out)
+	}
+}
+
+func TestLayoutChildBlockModifiers(t *testing.T) {
+	dir := t.TempDir()
+	layout := filepath.Join(dir, "layout.html")
+	os.WriteFile(layout, []byte(`@prepend("content") {layout-before }@block("content") {fallback}@append("content") { layout-after}`), 0644)
+
+	page := `@extends("layout.html")
+@prepend("content") {child-before }
+@define("content") {middle}
+@append("content") { child-after}`
+
+	e := New()
+	e.BaseDir = dir
+	e.AutoEscape = false
+	out, err := e.Render(page, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "layout-before child-before middle child-after layout-after" {
+		t.Fatalf("unexpected: %q", out)
+	}
+}
+
+func TestLayoutParentDirective(t *testing.T) {
+	dir := t.TempDir()
+	layout := filepath.Join(dir, "layout.html")
+	os.WriteFile(layout, []byte(`<main>@block("content") {default ${title}}</main>`), 0644)
+
+	page := `@extends("layout.html")
+@define("content") {before @parent after}`
+
+	e := New()
+	e.BaseDir = dir
+	e.AutoEscape = false
+	out, err := e.Render(page, map[string]any{"title": "Title"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "<main>before default Title after</main>" {
+		t.Fatalf("unexpected: %q", out)
+	}
+}
+
+func TestLayoutParentDirectiveInsideConditional(t *testing.T) {
+	dir := t.TempDir()
+	layout := filepath.Join(dir, "layout.html")
+	os.WriteFile(layout, []byte(`@block("content") {default}`), 0644)
+
+	page := `@extends("layout.html")
+@define("content") {@if(showParent) {@parent}}`
+
+	e := New()
+	e.BaseDir = dir
+	e.AutoEscape = false
+	out, err := e.Render(page, map[string]any{"showParent": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "default" {
+		t.Fatalf("unexpected: %q", out)
+	}
+}
+
+func TestStandaloneParentDirectiveIsNoop(t *testing.T) {
+	e := New()
+	e.AutoEscape = false
+
+	out, err := e.Render(`before @parent after`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "before  after" {
+		t.Fatalf("unexpected: %q", out)
+	}
+}
+
+func TestCacheDirectiveRendersBodyWithoutMarkers(t *testing.T) {
+	e := New()
+	e.AutoEscape = false
+
+	tmpl := `<h2>Fragment Caching</h2>
+<p>The block below caches its output for the engine's FragmentTTL (30s):</p>
+@cache("demo", "30") {
+  <div>
+    <p>Generated at: ${now()}</p>
+  </div>
+}
+<p>Live (uncached): ${now()}</p>`
+
+	out, err := e.Render(tmpl, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, `@cache("demo", "30")`) || strings.Contains(out, "\n}\n") {
+		t.Fatalf("cache directive markers should not render: %q", out)
+	}
+	if !strings.Contains(out, "<div>") || !strings.Contains(out, "Live (uncached)") {
+		t.Fatalf("expected cached body and live content, got %q", out)
+	}
+}
+
+func TestCacheDirectiveReusesCachedFragment(t *testing.T) {
+	e := New()
+	e.AutoEscape = false
+
+	tmpl := `@cache("demo", 30) {cached:${value}} live:${value}`
+	first, err := e.Render(tmpl, map[string]any{"value": "first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := e.Render(tmpl, map[string]any{"value": "second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != "cached:first live:first" {
+		t.Fatalf("unexpected first render: %q", first)
+	}
+	if second != "cached:first live:second" {
+		t.Fatalf("expected cached fragment to be reused, got %q", second)
+	}
+}
+
 func TestGlobals(t *testing.T) {
 	e := New()
 	e.AutoEscape = false

@@ -20,6 +20,7 @@ const directives = {
   extends: "Use a layout template. Syntax: @extends(\"layouts/main.html\").",
   block: "Layout block placeholder.",
   define: "Define content for a layout block.",
+  parent: "Render the default body of the current layout block inside @define.",
   component: "Define a reusable component with optional props.",
   render: "Render a component by name with optional props and children.",
   slot: "Slot placeholder inside a component.",
@@ -259,6 +260,7 @@ function directiveSnippet(label) {
     "@for": "@for(${1:item} in ${2:items}) {\n  $0\n} @empty {\n  ${3:No items.}\n}",
     "@component": "@component(\"${1:Name}\", ${2:prop}) {\n  $0\n}",
     "@render": "@render(\"${1:Name}\", {${2:key}: ${3:value}}) {\n  $0\n}",
+    "@parent": "@parent",
     "@signal": "@signal(${1:name} = ${2:value})"
   };
   return snippets[`@${label}`] || `@${label}`;

@@ -177,20 +177,21 @@ type CacheStats struct {
 
 // Engine is the main entry point for rendering SPL templates.
 type Engine struct {
-	BaseDir             string                          // directory for resolving includes/layouts
-	FS                  fs.FS                           // optional embedded filesystem for loading templates
-	DelimLeft           string                          // left interpolation delimiter (default: "${")
-	DelimRight          string                          // right interpolation delimiter (default: "}")
-	Filters             map[string]Filter               // registered filters
-	Globals             map[string]any                  // global template variables merged into every render
-	AutoEscape          bool                            // auto HTML-escape ${} output (default: true)
-	MaxDepth            int                             // max include/layout nesting depth (default: 64)
-	Components          map[string]componentDef         // registered reusable components
-	slotStack           []*slotContext                  // stack for nested component slot contexts
-	watchState          map[string]string               // @watch: expr → last evaluated value string
-	exprCache           map[string]exprCacheValue     // cached parsed expression ASTs
-	fileCache           map[string]nodesCacheValue    // cached parsed template files by resolved path
-	tmplCache           map[string]nodesCacheValue    // cached parsed template strings
+	BaseDir             string                     // directory for resolving includes/layouts
+	FS                  fs.FS                      // optional embedded filesystem for loading templates
+	DelimLeft           string                     // left interpolation delimiter (default: "${")
+	DelimRight          string                     // right interpolation delimiter (default: "}")
+	Filters             map[string]Filter          // registered filters
+	Globals             map[string]any             // global template variables merged into every render
+	AutoEscape          bool                       // auto HTML-escape ${} output (default: true)
+	MaxDepth            int                        // max include/layout nesting depth (default: 64)
+	Components          map[string]componentDef    // registered reusable components
+	slotStack           []*slotContext             // stack for nested component slot contexts
+	parentBlockStack    []parentBlockContext       // stack for @parent inside layout block overrides
+	watchState          map[string]string          // @watch: expr → last evaluated value string
+	exprCache           map[string]exprCacheValue  // cached parsed expression ASTs
+	fileCache           map[string]nodesCacheValue // cached parsed template files by resolved path
+	tmplCache           map[string]nodesCacheValue // cached parsed template strings
 	compiledFileCache   map[string]compiledCacheValue
 	compiledTextCache   map[string]compiledCacheValue
 	baseEnv             *interpreter.Environment // base environment for the current render call
@@ -570,6 +571,7 @@ func (e *Engine) cloneForRender(state *hydrationState, components map[string]com
 	cloned := *e
 	cloned.Components = components
 	cloned.slotStack = nil
+	cloned.parentBlockStack = nil
 	cloned.watchState = nil // lazy-init in renderWatch
 	cloned.baseEnv = interpreter.NewEnclosedEnvironment(globalEnv)
 	cloned.hydration = state
@@ -732,6 +734,7 @@ func (e *Engine) renderCompiled(ct *compiledTemplate, data map[string]any, state
 		cloned.Components = components
 	}
 	cloned.slotStack = nil
+	cloned.parentBlockStack = nil
 	cloned.watchState = nil // lazy-init on first use
 	cloned.baseEnv = interpreter.NewEnclosedEnvironment(globalEnv)
 	cloned.hydration = state

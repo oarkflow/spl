@@ -19,6 +19,11 @@
     "body": ["@render(\"${1:Name}\", {${2:key}: ${3:value}}) {", "  $0", "}"],
     "description": "Render a component"
   },
+  "SPL parent": {
+    "prefix": "@parent",
+    "body": "@parent",
+    "description": "Render the default body of the current layout block"
+  },
   "SPL signal": {
     "prefix": "@signal",
     "body": "@signal(${1:name} = ${2:value})",

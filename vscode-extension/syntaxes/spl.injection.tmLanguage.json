@@ -38,7 +38,7 @@
       "patterns": [
         {
           "name": "meta.directive.block.spl",
-          "begin": "(@)(if|elseif|for|switch|match|case|include|import|handler|extends|block|define|component|render|fill|let|computed|watch|signal|bind|effect|reactive|click|lazy)\\b",
+          "begin": "(@)(if|elseif|for|switch|match|case|include|import|handler|extends|block|define|parent|component|render|fill|let|computed|watch|signal|bind|effect|reactive|click|lazy)\\b",
           "beginCaptures": {
             "1": { "name": "punctuation.definition.directive.spl" },
             "2": { "name": "keyword.control.directive.spl" }

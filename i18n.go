@@ -298,31 +298,24 @@ func (e *Engine) renderTranslate(n *TranslateNode, env *interpreter.Environment,
 // @cache("key", ttl) { content }
 // @cache("key", ttl, "dep1", "dep2") { content }
 func (p *parser) parseCache() (*CacheNode, error) {
-	p.advanceN(len("@cache") + 1) // skip "@cache("
-	key := p.readUntil(',', ')')
-	key = strings.TrimSpace(key)
-	if key == "" {
+	p.advanceN(len("@cache"))
+	inner, err := p.readParenExpr()
+	if err != nil {
+		return nil, p.errorf("@cache: %w", err)
+	}
+	parts := splitCaseValues(inner)
+	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
 		return nil, p.errorf("@cache requires a key argument")
 	}
-	node := &CacheNode{Key: key}
-	if p.peek() == ',' {
-		p.advance()
-		p.skipWhitespace()
-		ttl := p.readUntil(',', ')')
-		ttl = strings.TrimSpace(ttl)
-		node.TTL = ttl
+	node := &CacheNode{Key: strings.TrimSpace(parts[0])}
+	if len(parts) > 1 {
+		node.TTL = strings.TrimSpace(parts[1])
 	}
-	for p.peek() == ',' {
-		p.advance()
-		p.skipWhitespace()
-		dep := p.readUntil(',', ')')
-		dep = strings.TrimSpace(dep)
+	for _, part := range parts[2:] {
+		dep := strings.TrimSpace(part)
 		if dep != "" {
 			node.Deps = append(node.Deps, dep)
 		}
-	}
-	if p.peek() == ')' {
-		p.advance()
 	}
 	p.skipWhitespaceAndNewlines()
 	if p.peek() != '{' {

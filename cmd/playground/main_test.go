@@ -58,6 +58,56 @@ func TestBuiltinExamplesRender(t *testing.T) {
 	}
 }
 
+func TestPlaygroundCacheExampleUsesPersistentFragmentCache(t *testing.T) {
+	engine := newPlaygroundRenderEngine(".")
+	engine.AutoEscape = false
+
+	tmpl := `@cache("demo", "30") {cached:${value}} live:${value}`
+	first, err := engine.RenderSSR(tmpl, map[string]any{"value": "first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := engine.RenderSSR(tmpl, map[string]any{"value": "second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(first, "@cache") || strings.Contains(second, "@cache") {
+		t.Fatalf("cache directive markers should not render: first=%q second=%q", first, second)
+	}
+	if first != "cached:first live:first" {
+		t.Fatalf("unexpected first render: %q", first)
+	}
+	if second != "cached:first live:second" {
+		t.Fatalf("expected cached fragment to survive across playground renders, got %q", second)
+	}
+}
+
+func TestPlaygroundCacheExampleWithProseApostropheParsesDirective(t *testing.T) {
+	var tmpl string
+	for _, ex := range builtinExamples() {
+		if ex["name"] == "cache-directive" {
+			tmpl, _ = ex["template"].(string)
+			break
+		}
+	}
+	if tmpl == "" {
+		t.Fatal("cache-directive example not found")
+	}
+
+	engine := newPlaygroundRenderEngine(".")
+	engine.AutoEscape = false
+	out, err := engine.RenderSSR(tmpl, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, `@cache("demo", "30")`) {
+		t.Fatalf("cache directive marker should not render: %q", out)
+	}
+	if !strings.Contains(out, "Cached fragment") || !strings.Contains(out, "Live (uncached)") {
+		t.Fatalf("expected cached body and live content, got %q", out)
+	}
+}
+
 func TestPracticalExamplesHaveDescriptions(t *testing.T) {
 	for _, ex := range builtinExamples() {
 		category, _ := ex["category"].(string)
