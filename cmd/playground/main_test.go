@@ -108,6 +108,46 @@ func TestPlaygroundCacheExampleWithProseApostropheParsesDirective(t *testing.T) 
 	}
 }
 
+func TestFormatAPIHTMLIndentsHydrationConditionals(t *testing.T) {
+	src := `<div data-spl-if="items">
+  <h2>Items (3 total)</h2>
+  <div class="item">
+    <strong>Widget</strong> - $9.99
+  </div>
+  </div><div data-spl-else="items" style="display:none">
+  <p>No items available.</p>
+  </div>`
+
+	out := formatAPIHTML(src)
+	if strings.Contains(out, `</div><div data-spl-else`) {
+		t.Fatalf("expected adjacent hydration wrappers to be split, got %q", out)
+	}
+	required := []string{
+		`<div data-spl-if="items">`,
+		`  <h2>Items (3 total)</h2>`,
+		`  <div class="item">`,
+		`    <strong>Widget</strong> - $9.99`,
+		`<div data-spl-else="items" style="display:none">`,
+		`  <p>No items available.</p>`,
+	}
+	for _, want := range required {
+		if !strings.Contains(out, want) {
+			t.Fatalf("formatted output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestFormatAPIHTMLLeavesHydrationScriptUntouched(t *testing.T) {
+	src := `<div><p>Hello</p></div><script>if (a < b) { console.log("<p>"); }</script>`
+	out := formatAPIHTML(src)
+	if !strings.Contains(out, `<script>if (a < b) { console.log("<p>"); }</script>`) {
+		t.Fatalf("script content should be untouched, got %q", out)
+	}
+	if strings.Contains(out, `</div><script`) {
+		t.Fatalf("expected script to start on a new line, got %q", out)
+	}
+}
+
 func TestPracticalExamplesHaveDescriptions(t *testing.T) {
 	for _, ex := range builtinExamples() {
 		category, _ := ex["category"].(string)

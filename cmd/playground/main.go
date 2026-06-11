@@ -1464,7 +1464,7 @@ func main() {
 			return
 		}
 
-		writeJSON(w, http.StatusOK, renderResponse{Result: rendered, ResultType: "HTML", DurationMS: duration})
+		writeJSON(w, http.StatusOK, renderResponse{Result: formatAPIHTML(rendered), ResultType: "HTML", DurationMS: duration})
 	})
 
 	fileServer, err := fsSub()
