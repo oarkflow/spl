@@ -106,8 +106,8 @@ SPL.interpolate=function(source){
   });
 };
 SPL.resolveTemplate=function(source){
-  return String(source||'').replace(/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g,function(_,name){
-    var value=SPL.read(name);
+  return String(source||'').replace(/\{\{\s*([A-Za-z0-9_][A-Za-z0-9_\.]*)\s*\}\}/g,function(_,path){
+    var value=SPL.readTarget(path);
     if(value==null){return '';}
     if(typeof value==='object'){return JSON.stringify(value);}
     return String(value);
@@ -338,6 +338,7 @@ SPL.getScope=function(event,element,useRefs){
       if(typeof key==='symbol'){return target[key];}
       if(Object.prototype.hasOwnProperty.call(target,key)){return target[key];}
       if(Object.prototype.hasOwnProperty.call(SPL.handlers,key)){return SPL.handlers[key];}
+      if(Object.prototype.hasOwnProperty.call(SPL.signals,String(key))){return SPL.read(String(key));}
       if(typeof globalThis!=='undefined' && key in globalThis){return globalThis[key];}
       if(useRefs){return SPL.signalRef(String(key));}
       return SPL.read(String(key));
@@ -793,17 +794,28 @@ SPL.assignPath=function(target,path,value){
 };
 SPL.serializeForm=function(form){
   var payload={};
+  var radioGroups={};
+  var checkboxGroups={};
   if(!form){return payload;}
   Array.from(form.elements||[]).forEach(function(field){
     if(!field.name || field.disabled){return;}
-    var value;
-    if((field.type==='checkbox' || field.type==='radio')){
-      value=Boolean(field.checked);
-    } else {
-      value=field.value;
+    if(field.type==='radio'){
+      if(field.checked){radioGroups[field.name]=field.value;}
+      return;
     }
-    if(field.name.indexOf('.')>=0){SPL.assignPath(payload,field.name,value);}
-    else{payload[field.name]=value;}
+    if(field.type==='checkbox'){
+      if(field.checked){
+        if(!checkboxGroups[field.name]){checkboxGroups[field.name]=[];}
+        checkboxGroups[field.name].push(field.value || true);
+      }
+      return;
+    }
+    SPL.assignPath(payload,field.name,field.value);
+  });
+  Object.keys(radioGroups).forEach(function(name){SPL.assignPath(payload,name,radioGroups[name]);});
+  Object.keys(checkboxGroups).forEach(function(name){
+    var values=checkboxGroups[name];
+    SPL.assignPath(payload,name,values.length===1?true:values);
   });
   return payload;
 };
@@ -839,12 +851,12 @@ SPL.patchAPI=function(root){
       }
       return fetch(url,{method:method,headers:headers,body:body}).then(function(res){
         return SPL.apiParse(res,parseMode).then(function(payload){
-          if(target){SPL.write(target,payload);}
-          resetSignals.forEach(function(name){SPL.write(name,'');});
+          if(target){SPL.writeTarget(target,payload);}
+          resetSignals.forEach(function(name){SPL.writeTarget(name,'');});
           return payload;
         });
       }).catch(function(err){
-        if(target){SPL.write(target,'API error: '+err.message);}
+        if(target){SPL.writeTarget(target,'API error: '+err.message);}
       });
     };
     var eventName=(el.getAttribute('data-spl-api-event')||'click').toLowerCase();
@@ -1036,6 +1048,7 @@ func genVarName(n int) string {
 var splInternalProps = []string{
 	"apiParse",
 	"applyBinding",
+	"assignPath",
 	"bindingEvent",
 	"boot",
 	"bootPayload",

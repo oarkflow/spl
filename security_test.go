@@ -175,6 +175,28 @@ func TestSecurityRuntimeRemovesDynamicCodeExecution(t *testing.T) {
 	}
 }
 
+func TestHydrationRuntimeIncludesAllFeatureModules(t *testing.T) {
+	e := New()
+	runtimeJS := e.RuntimeJSRaw()
+	for _, needle := range []string{
+		"SPL.patchBindings",
+		"SPL.patchConditionals",
+		"SPL.patchEvents",
+		"SPL.patchForms",
+		"SPL.patchModels",
+		"SPL.patchRefs",
+		"SPL.patchSchemaArrays",
+		"SPL.patchAPI",
+		"SPL.resolveTemplate",
+		"SPL.serializeForm",
+		"SPL.writeTarget",
+	} {
+		if !strings.Contains(runtimeJS, needle) {
+			t.Fatalf("expected runtime to include %s, got %q", needle, runtimeJS)
+		}
+	}
+}
+
 func TestSecurityRejectsActiveHTMLInSecureMode(t *testing.T) {
 	e := New()
 	e.SecureMode = true
