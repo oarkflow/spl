@@ -624,16 +624,19 @@ const moduleModels = `SPL.patchModels=function(root){
     var path=el.getAttribute('data-spl-model');
     var dot=path.indexOf('.');
     var signalName=dot<0?path:path.slice(0,dot);
-    var isCheckOrRadio=(el.type==='checkbox'||el.type==='radio');
+    var isRadio=(el.type==='radio');
+    var isCheckOrRadio=(el.type==='checkbox'||isRadio);
     var prop=isCheckOrRadio?'checked':'value';
     var update=function(){
       var value=dot<0?SPL.read(path):SPL.readPath(path);
-      if(prop==='checked'){el.checked=Boolean(value);}else{el.value=value==null?'':String(value);}
+      if(isRadio){el.checked=(String(value)===el.value);}
+      else if(prop==='checked'){el.checked=Boolean(value);}
+      else{el.value=value==null?'':String(value);}
     };
     update();
     var eventName=isCheckOrRadio?'change':'input';
     el.addEventListener(eventName,function(){
-      var val=prop==='checked'?Boolean(el.checked):el.value;
+      var val=isRadio?el.value:(prop==='checked'?Boolean(el.checked):el.value);
       if(dot<0){SPL.write(path,val);}else{SPL.writePath(path,val);}
     });
     SPL.subscribe(signalName,update);
