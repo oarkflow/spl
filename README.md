@@ -612,6 +612,7 @@ type Engine struct {
     MaxDepth            int              // max include/layout nesting (default: 64)
     Components          map[string]componentDef
     HydrationRuntimeURL string           // external JS runtime URL
+    HydrationAssetURL   func(string) string // stores hydration JS and returns its URL
     CSPNonce            string           // nonce for hydration <script> tags
     SecureMode          bool             // CSP-safe, non-eval hydration (default: false)
     DisableDebug        bool             // exclude debug from runtime
@@ -674,9 +675,10 @@ SSR rendering:
 1. Parses template into AST
 2. Evaluates expressions server-side
 3. Wraps reactive elements with `data-spl-*` markers
-4. Builds a hydration payload (`<script type="application/json" data-spl-hydration>`) containing signals, handlers, effects, and views
-5. Injects the hydration runtime (inline or via `HydrationRuntimeURL`)
-6. In secure mode, validates all expressions and blocks unsafe patterns
+4. Builds a hydration payload containing signals, handlers, effects, and views
+5. Injects hydration as inert JSON, or as cacheable JS via `HydrationAssetURL`
+6. Injects the hydration runtime (inline or via `HydrationRuntimeURL`)
+7. In secure mode, validates all expressions and blocks unsafe patterns
 
 **Hydration payload structure:**
 ```json

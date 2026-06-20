@@ -71,3 +71,32 @@ func TestFiberDemoRendersContentInSecureMode(t *testing.T) {
 		t.Fatalf("expected hydration payload in secure mode, got %q", html)
 	}
 }
+
+func TestFiberDemoRendersCacheableHydrationAsset(t *testing.T) {
+	engine := New("./views")
+	engine.SSR(true).HydrationRuntimeURL("/static/spl-runtime.js").HydrationAssets("/static")
+	engine.engine.Globals["siteName"] = "SPL Fiber Demo"
+	if err := engine.Load(); err != nil {
+		t.Fatalf("load views: %v", err)
+	}
+	var out strings.Builder
+	if err := engine.Render(&out, "index", demoRenderData()); err != nil {
+		t.Fatalf("render index: %v", err)
+	}
+	html := out.String()
+	prefix := `src="/static/spl-hydration.`
+	start := strings.Index(html, prefix)
+	if start < 0 || strings.Contains(html, `type="application/json" data-spl-hydration`) {
+		t.Fatalf("expected external hydration asset, got %q", html)
+	}
+	start += len(`src="/static/`)
+	end := strings.Index(html[start:], `"`)
+	assetName := html[start : start+end]
+	asset, ok := engine.HydrationAsset(assetName)
+	if !ok || !strings.HasPrefix(asset, `window.__SPL_HYDRATE__({`) {
+		t.Fatalf("expected stored executable hydration JS, got %q", asset)
+	}
+	if strings.Index(html, `data-spl-runtime`) > strings.Index(html, `data-spl-hydration`) {
+		t.Fatal("runtime must load before executable hydration")
+	}
+}

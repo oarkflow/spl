@@ -45,11 +45,12 @@ type FormConfig struct {
 }
 
 type SPLViews struct {
-	engine    *template.Engine
-	directory string
-	extension string
-	reload    bool
-	ssr       bool
+	engine          *template.Engine
+	directory       string
+	extension       string
+	reload          bool
+	ssr             bool
+	hydrationAssets sync.Map
 }
 
 func New(directory string, extension ...string) *SPLViews {
@@ -77,6 +78,26 @@ func (v *SPLViews) SSR(enabled bool) *SPLViews {
 func (v *SPLViews) HydrationRuntimeURL(url string) *SPLViews {
 	v.engine.HydrationRuntimeURL = url
 	return v
+}
+
+// HydrationAssets stores each generated hydration program under a content hash
+// and makes rendered pages reference it as an external, cacheable JavaScript file.
+func (v *SPLViews) HydrationAssets(prefix string) *SPLViews {
+	prefix = strings.TrimRight(prefix, "/")
+	v.engine.HydrationAssetURL = func(js string) string {
+		name := "spl-hydration." + runtimeAssetVersion(js) + ".js"
+		v.hydrationAssets.Store(name, js)
+		return prefix + "/" + name
+	}
+	return v
+}
+
+func (v *SPLViews) HydrationAsset(name string) (string, bool) {
+	asset, ok := v.hydrationAssets.Load(name)
+	if !ok {
+		return "", false
+	}
+	return asset.(string), true
 }
 
 func (v *SPLViews) Load() error {
@@ -162,6 +183,7 @@ func main() {
 
 	runtimeVersion := runtimeAssetVersion(engine.engine.RuntimeJS())
 	engine.HydrationRuntimeURL("/static/spl-runtime.min.js?v=" + runtimeVersion)
+	engine.HydrationAssets("/static")
 
 	engine.engine.Globals["siteName"] = "SPL Fiber Demo"
 
@@ -178,6 +200,16 @@ func main() {
 		c.Set("Content-Type", "application/javascript")
 		c.Set("Cache-Control", "public, max-age=31536000, immutable")
 		return c.SendString(engine.engine.RuntimeJS())
+	})
+
+	app.Get("/static/:asset", func(c fiber.Ctx) error {
+		asset, ok := engine.HydrationAsset(c.Params("asset"))
+		if !ok {
+			return c.SendStatus(fiber.StatusNotFound)
+		}
+		c.Set("Content-Type", "application/javascript")
+		c.Set("Cache-Control", "public, max-age=31536000, immutable")
+		return c.SendString(asset)
 	})
 
 	app.Get("/", func(c fiber.Ctx) error {

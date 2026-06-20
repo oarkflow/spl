@@ -51,6 +51,45 @@ func TestTemplateSSRHydrationAndReactiveNodes(t *testing.T) {
 	}
 }
 
+func TestTemplateSSRExternalHydrationAsset(t *testing.T) {
+	e := New()
+	e.HydrationRuntimeURL = "/assets/spl-runtime.js"
+	var hydrationJS string
+	e.HydrationAssetURL = func(js string) string {
+		hydrationJS = js
+		return `/assets/page-state.js?v=1&cache=yes`
+	}
+
+	out, err := e.RenderSSR(`@signal(count = 3)<p>@bind(count)</p>`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, `type="application/json" data-spl-hydration`) {
+		t.Fatalf("expected hydration to be external, got %q", out)
+	}
+	if !strings.Contains(out, `data-spl-hydration src="/assets/page-state.js?v=1&amp;cache=yes"`) {
+		t.Fatalf("expected escaped hydration asset URL, got %q", out)
+	}
+	if strings.Index(out, `data-spl-runtime`) > strings.Index(out, `data-spl-hydration`) {
+		t.Fatalf("expected runtime before executable hydration, got %q", out)
+	}
+	if !strings.HasPrefix(hydrationJS, `window.__SPL_HYDRATE__({`) || !strings.Contains(hydrationJS, `"count":3`) {
+		t.Fatalf("unexpected hydration JavaScript %q", hydrationJS)
+	}
+}
+
+func TestTemplateSSREmptyHydrationAssetURLFallsBackInline(t *testing.T) {
+	e := New()
+	e.HydrationAssetURL = func(string) string { return "" }
+	out, err := e.RenderSSR(`@signal(count = 1)<p>@bind(count)</p>`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `type="application/json" data-spl-hydration`) {
+		t.Fatalf("expected inline hydration fallback, got %q", out)
+	}
+}
+
 func TestCompleteReactiveShowcaseTemplate(t *testing.T) {
 	e := New()
 	e.BaseDir = filepath.Join("testdata", "templates")

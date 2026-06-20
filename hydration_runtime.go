@@ -1197,6 +1197,7 @@ render();
 (view.Deps||[]).forEach(function(dep){SPL.subscribe(dep,render);});
 });
 };
+window.__SPL_HYDRATE__=function(payload){SPL.bootPayload(payload||{});};
 SPL.boot=function(root){
 var scope=root||document;
 var nodes=Array.from(scope.querySelectorAll?scope.querySelectorAll('script[data-spl-hydration][type="application/json"]'):[]);

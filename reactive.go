@@ -153,24 +153,19 @@ func (e *Engine) renderHydrationScript(renderedHTML string) string {
 	}
 	encoded, _ := json.Marshal(payload)
 
-	var sb strings.Builder
+	var runtimeTag strings.Builder
 
-	// 1. Per-page payload as inert JSON for CSP-safe bootstrapping.
-	sb.WriteString(`<script type="application/json" data-spl-hydration>`)
-	sb.WriteString(string(encoded))
-	sb.WriteString(`</script>`)
-
-	// 2. Runtime: external URL or inline with tree-shaken + obfuscated code.
+	// Runtime: external URL or inline with tree-shaken + obfuscated code.
 	if e.HydrationRuntimeURL != "" {
-		sb.WriteString(`<script`)
+		runtimeTag.WriteString(`<script data-spl-runtime`)
 		if e.CSPNonce != "" {
-			sb.WriteString(` nonce="`)
-			sb.WriteString(html.EscapeString(e.CSPNonce))
-			sb.WriteString(`"`)
+			runtimeTag.WriteString(` nonce="`)
+			runtimeTag.WriteString(html.EscapeString(e.CSPNonce))
+			runtimeTag.WriteString(`"`)
 		}
-		sb.WriteString(` src="`)
-		sb.WriteString(html.EscapeString(e.HydrationRuntimeURL))
-		sb.WriteString(`"></script>`)
+		runtimeTag.WriteString(` src="`)
+		runtimeTag.WriteString(html.EscapeString(e.HydrationRuntimeURL))
+		runtimeTag.WriteString(`"></script>`)
 	} else {
 		features := detectFeatures(renderedHTML, e.hydration.Effects, e.hydration.Views)
 		if !e.DisableDebug {
@@ -180,18 +175,38 @@ func (e *Engine) renderHydrationScript(renderedHTML string) string {
 			features &^= featAPI
 		}
 		runtime := getObfuscatedForFeatures(features, e.DisableDebug, e.SecureMode)
-		sb.WriteString(`<script data-spl-runtime`)
+		runtimeTag.WriteString(`<script data-spl-runtime`)
 		if e.CSPNonce != "" {
-			sb.WriteString(` nonce="`)
-			sb.WriteString(html.EscapeString(e.CSPNonce))
-			sb.WriteString(`"`)
+			runtimeTag.WriteString(` nonce="`)
+			runtimeTag.WriteString(html.EscapeString(e.CSPNonce))
+			runtimeTag.WriteString(`"`)
 		}
-		sb.WriteString(`>if(!window.__SPL_RT__){window.__SPL_RT__=1;`)
-		sb.WriteString(runtime)
-		sb.WriteString(`}</script>`)
+		runtimeTag.WriteString(`>if(!window.__SPL_RT__){window.__SPL_RT__=1;`)
+		runtimeTag.WriteString(runtime)
+		runtimeTag.WriteString(`}</script>`)
 	}
 
-	return sb.String()
+	// External hydration is executable JS, so load the runtime first. The
+	// callback can persist the content under a hash and return a cacheable URL.
+	if e.HydrationAssetURL != nil {
+		hydrationJS := `window.__SPL_HYDRATE__(` + string(encoded) + `);`
+		if assetURL := e.HydrationAssetURL(hydrationJS); assetURL != "" {
+			var hydrationTag strings.Builder
+			hydrationTag.WriteString(`<script data-spl-hydration`)
+			if e.CSPNonce != "" {
+				hydrationTag.WriteString(` nonce="`)
+				hydrationTag.WriteString(html.EscapeString(e.CSPNonce))
+				hydrationTag.WriteString(`"`)
+			}
+			hydrationTag.WriteString(` src="`)
+			hydrationTag.WriteString(html.EscapeString(assetURL))
+			hydrationTag.WriteString(`"></script>`)
+			return runtimeTag.String() + hydrationTag.String()
+		}
+	}
+
+	// Inline hydration remains inert JSON and is booted by the runtime.
+	return `<script type="application/json" data-spl-hydration>` + string(encoded) + `</script>` + runtimeTag.String()
 }
 
 func (e *Engine) prepareHydrationOutput(renderedHTML string) (string, error) {

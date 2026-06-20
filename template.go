@@ -202,6 +202,7 @@ type Engine struct {
 	localSignalSeq      int                      // per-render sequence for @local signal aliases
 	localSignals        map[string]string        // scoped signal aliases visible during render
 	HydrationRuntimeURL string                   // if set, emit <script src="..."> instead of inlining runtime
+	HydrationAssetURL   func(string) string      // if set, stores hydration JS and returns its public URL
 	CSPNonce            string                   // optional nonce applied to executable hydration script tags
 	SecureMode          bool                     // enforce CSP-safe, non-eval hydration output (default: false)
 	DisableDebug        bool                     // exclude debug/getRenderStats from hydration runtime
