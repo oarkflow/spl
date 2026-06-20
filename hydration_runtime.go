@@ -1,6 +1,7 @@
 package spl
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -35,30 +36,123 @@ const (
 
 // moduleCore: SPL namespace, signals, subscribe, signalRef, signalName, interpolate, resolveTemplate
 const moduleCore = `var SPL=window.__SPL__=window.__SPL__||{};
-SPL.signals=SPL.signals||{};
-SPL.handlers=SPL.handlers||{};
-SPL.refs=SPL.refs||{};
-SPL.allowUnsafeEval=SPL.allowUnsafeEval||false;
+SPL.compiledWithUnsafeEval=SPL.compiledWithUnsafeEval===true;
+SPL.allowUnsafeEval=SPL.compiledWithUnsafeEval;
+SPL.signals=SPL.signals||Object.create(null);
+SPL.handlers=SPL.handlers||Object.create(null);
+SPL.refs=SPL.refs||Object.create(null);
+SPL.bindings=SPL.bindings||Object.create(null);
+SPL.hooks=SPL.hooks||Object.create(null);
+SPL._batchDepth=0;
+SPL._batchQueue=SPL._batchQueue||[];
+SPL._sameValue=function(a,b){
+  if(typeof Object.is==='function'){return Object.is(a,b);}
+  return a===b?(a!==0||1/a===1/b):a!==a&&b!==b;
+};
+SPL._notifyError=function(context,error){
+  try{
+    if(typeof SPL.onError==='function'){SPL.onError(context,error);}
+  } catch(ignore){}
+  if(typeof console!=='undefined' && console.error){
+    try{console.error('[spl:error]', {context:context, error:error});}
+    catch(ignore){console.error('[spl:error]', context, error);}
+  }
+};
+SPL._notifyHook=function(name,args){
+  var hook=SPL.hooks&&SPL.hooks[name];
+  if(typeof hook==='function'){
+    try{hook.apply(null,args||[]);}
+    catch(err){SPL._notifyError('hook:'+name,err);}
+  }
+};
+SPL._enqueue=function(fn){
+  if(SPL._batchDepth){SPL._batchQueue.push(fn);return;}
+  try{fn();}
+  catch(err){SPL._notifyError('callback',err);}
+};
+SPL._flushBatch=function(){
+  while(SPL._batchQueue.length){
+    var fn=SPL._batchQueue.shift();
+    try{fn();}
+    catch(err){SPL._notifyError('batch',err);}
+  }
+};
+SPL.batch=function(fn){
+  if(typeof fn!=='function'){return;}
+  if(SPL._batchDepth){fn();return;}
+  SPL._batchDepth=1;
+  try{fn();}
+  finally{
+    SPL._batchDepth=0;
+    SPL._flushBatch();
+  }
+};
 SPL.registerHandler=function(name,fn){
   if(typeof name!=='string' || !name){return;}
   if(typeof fn!=='function' && !Array.isArray(fn) && typeof fn!=='string'){return;}
   SPL.handlers[name]=fn;
 };
 SPL.ensureSignal=function(name,initial){
+  name=String(name||'');
+  if(!name){return {value:initial,subscribers:[]};}
   if(!SPL.signals[name]){SPL.signals[name]={value:initial,subscribers:[]};}
   return SPL.signals[name];
 };
+SPL.isSafePathSegment=function(part){
+  return part!=='__proto__' && part!=='prototype' && part!=='constructor';
+};
+SPL.allowedPath=/^[A-Za-z_][A-Za-z0-9_]*(\.([A-Za-z_][A-Za-z0-9_]*|[0-9]+))*$/;
+SPL.normalizePath=function(path){
+  if(typeof path!=='string'){return '';}
+  path=path.trim();
+  if(!SPL.allowedPath.test(path)){return '';}
+  var parts=path.split('.');
+  for(var i=0;i<parts.length;i++){
+    if(!SPL.isSafePathSegment(parts[i])){return '';}
+  }
+  return path;
+};
 SPL.read=function(name){return SPL.ensureSignal(name,null).value;};
 SPL.write=function(name,value){
+  name=String(name||'');
+  if(!name){return;}
   var s=SPL.ensureSignal(name,value);
+  if(SPL._sameValue(s.value,value)){return;}
   s.value=value;
-  s.subscribers.forEach(function(fn){fn(value);});
+  SPL._notifyHook('signal',[name,value]);
+  var subscribers=s.subscribers.slice();
+  subscribers.forEach(function(fn){
+    if(typeof fn!=='function'){return;}
+    SPL._enqueue(function(){
+      try{fn(value);}
+      catch(err){SPL._notifyError('signal',{name:name,error:err});}
+    });
+  });
 };
 SPL.subscribe=function(name,fn){
+  name=String(name||'');
+  if(typeof fn!=='function' || !name){return function(){};}
   var s=SPL.ensureSignal(name,null);
+  for(var i=0;i<s.subscribers.length;i++){
+    if(s.subscribers[i]===fn){
+      return function(){SPL.unsubscribe(name,fn);};
+    }
+  }
   s.subscribers.push(fn);
+  return function(){SPL.unsubscribe(name,fn);};
+};
+SPL.unsubscribe=function(name,fn){
+  name=String(name||'');
+  var s=SPL.signals&&SPL.signals[name];
+  if(!s || typeof fn!=='function'){return false;}
+  var i=s.subscribers.indexOf(fn);
+  if(i<0){return false;}
+  s.subscribers.splice(i,1);
+  return true;
 };
 SPL.signalRef=function(name){
+  name=String(name||'');
+  if(!name){return null;}
   var signal=SPL.ensureSignal(name,null);
   if(signal.ref){return signal.ref;}
   signal.ref={
@@ -86,24 +180,29 @@ SPL.signalName=function(nameOrRef){
   }
   return '';
 };
+SPL.escapeHTML=function(value){
+  return String(value==null?'':value)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;')
+    .replace(/'/g,'&#39;');
+};
+SPL.formatSignalValue=function(value){
+  if(value===true){return 'true';}
+  if(value===false){return 'false';}
+  if(value==null){return '';}
+  if(typeof value==='object'){return JSON.stringify(value,null,2);}
+  return String(value);
+};
 SPL.interpolate=function(source){
-  return String(source||'').replace(/__SPL_SIGNAL__([A-Za-z0-9_.]+)__/g,function(_,path){
-    var dot=path.indexOf('.');
-    if(dot>=0){
-      var value=SPL.readPath(path);
-      if(value===true){return 'true';}
-      if(value===false){return 'false';}
-      if(value==null){return '';}
-      if(typeof value==='object'){return JSON.stringify(value,null,2);}
-      return String(value);
-    }
-    var value=SPL.read(path);
-    if(value===true){return 'true';}
-    if(value===false){return 'false';}
-    if(value==null){return '';}
-    if(typeof value==='object'){return JSON.stringify(value,null,2);}
-    return String(value);
-  });
+  return String(source||'')
+    .replace(/__SPL_RAW_SIGNAL__([A-Za-z0-9_.]+)__/g,function(_,path){
+      return SPL.formatSignalValue(SPL.readTarget(path));
+    })
+    .replace(/__SPL_SIGNAL__([A-Za-z0-9_.]+)__/g,function(_,path){
+      return SPL.escapeHTML(SPL.formatSignalValue(SPL.readTarget(path)));
+    });
 };
 SPL.resolveTemplate=function(source){
   return String(source||'').replace(/\{\{\s*([A-Za-z0-9_][A-Za-z0-9_\.]*)\s*\}\}/g,function(_,path){
@@ -114,11 +213,12 @@ SPL.resolveTemplate=function(source){
   });
 };
 SPL.readPath=function(path){
+  path=SPL.normalizePath(path);
+  if(!path){return undefined;}
   var dot=path.indexOf('.');
   if(dot<0){return SPL.read(path);}
-  var root=path.slice(0,dot);
   var rest=path.slice(dot+1);
-  var obj=SPL.read(root);
+  var obj=SPL.read(path.slice(0,dot));
   if(obj==null){return undefined;}
   var parts=rest.split('.');
   for(var i=0;i<parts.length;i++){
@@ -128,18 +228,19 @@ SPL.readPath=function(path){
   return obj;
 };
 SPL.writePath=function(path,value){
+  path=SPL.normalizePath(path);
+  if(!path){return;}
   var dot=path.indexOf('.');
   if(dot<0){SPL.write(path,value);return;}
   var root=path.slice(0,dot);
   var rest=path.slice(dot+1);
   var obj=SPL.read(root);
-  if(obj==null){obj={};}
-  if(typeof obj!=='object'){obj={};}
+  if(obj==null || typeof obj!=='object'){obj=Object.create(null);}
   var clone=JSON.parse(JSON.stringify(obj));
   var parts=rest.split('.');
   var cur=clone;
   for(var i=0;i<parts.length-1;i++){
-    if(cur[parts[i]]==null || typeof cur[parts[i]]!=='object'){cur[parts[i]]={};}
+    if(cur[parts[i]]==null || typeof cur[parts[i]]!=='object'){cur[parts[i]]=Object.create(null);}
     cur=cur[parts[i]];
   }
   cur[parts[parts.length-1]]=value;
@@ -147,11 +248,15 @@ SPL.writePath=function(path,value){
 };`
 
 // moduleScope: safe client action execution and event dispatch
-const moduleScope = `SPL.allowedPath=/^[A-Za-z_][A-Za-z0-9_]*(\.([A-Za-z_][A-Za-z0-9_]*|[0-9]+))*$/;
-SPL.normalizePath=function(path){
+const moduleScope = `SPL.normalizePath=function(path){
   if(typeof path!=='string'){return '';}
   path=path.trim();
-  return SPL.allowedPath.test(path)?path:'';
+  if(!SPL.allowedPath.test(path)){return '';}
+  var parts=path.split('.');
+  for(var i=0;i<parts.length;i++){
+    if(!SPL.isSafePathSegment(parts[i])){return '';}
+  }
+  return path;
 };
 SPL.readTarget=function(path){
   path=SPL.normalizePath(path);
@@ -428,7 +533,7 @@ SPL.extractDeps=function(expr){
 };`
 
 // moduleDebug: debug recording and render stats
-const moduleDebug = `SPL.debug=SPL.debug||{enabled:true,totalRenders:0,views:{},effects:{},signals:{}};
+const moduleDebug = `SPL.debug=SPL.debug||{enabled:true,totalRenders:0,views:Object.create(null),effects:Object.create(null),signals:Object.create(null)};
 SPL.debugRecord=function(kind,key){
   if(!SPL.debug || !SPL.debug.enabled){return;}
   SPL.debug.totalRenders=(SPL.debug.totalRenders||0)+1;
@@ -501,31 +606,56 @@ SPL.restoreFocus=function(root,snapshot){
 const moduleFocusStub = `SPL.captureFocus=function(){return null;};SPL.restoreFocus=function(){};`
 
 // moduleBindings: applyBinding, bindingEvent, readBindingValue, patchBindings
-const moduleBindings = `SPL.applyBinding=function(el,prop,value){
+const moduleBindings = `SPL.normalizeBindingProp=function(prop){
+  prop=String(prop||'');
+  var lower=prop.toLowerCase();
+  if(lower==='textcontent'){return 'textContent';}
+  if(lower==='innerhtml' || lower==='html-unsafe'){return 'innerHTML';}
+  if(lower==='html'){return 'html';}
+  return prop;
+};
+SPL.isTrustedHTMLBinding=function(el){
+  return el.getAttribute('data-spl-trusted-html')==='true' || el.hasAttribute('data-spl-bind-html-unsafe');
+};
+SPL.applyBinding=function(el,prop,value){
+  prop=SPL.normalizeBindingProp(prop);
   if(value!=null && typeof value==='object'){value=JSON.stringify(value,null,2);}
-  if(prop==='html'){el.innerHTML=value==null?'':String(value);return;}
+  var text=value==null?'':String(value);
+  if(prop==='html' || prop==='innerHTML'){
+    if(SPL.isTrustedHTMLBinding(el)){
+      el.innerHTML=text;
+    } else {
+      el.textContent=text;
+    }
+    return;
+  }
+  if(prop==='textContent'){el.textContent=text;return;}
   if(prop in el){el[prop]=value==null?'':value;return;}
-  el.setAttribute(prop,value==null?'':String(value));
+  el.setAttribute(prop,text);
 };
 SPL.bindingEvent=function(el,prop){
   if(prop==='checked' || prop==='selectedIndex' || el.tagName==='SELECT'){return 'change';}
   return 'input';
 };
 SPL.readBindingValue=function(el,prop){
+  prop=SPL.normalizeBindingProp(prop);
+  if(prop==='textContent'){return el.textContent;}
+  if(prop==='innerHTML' || prop==='html'){return el.innerHTML;}
   if(prop in el){return el[prop];}
   return el.getAttribute(prop);
 };
 SPL.patchBindings=function(root){
   var nodes=(root.matches && (root.matches('[data-spl-bind]') || Array.from(root.attributes||[]).some(function(attr){return attr.name.indexOf('data-spl-bind-')===0;})))?[root]:[];
-  nodes=nodes.concat(Array.from(root.querySelectorAll ? root.querySelectorAll('[data-spl-bind], [data-spl-bind-value], [data-spl-bind-checked], [data-spl-bind-textContent], [data-spl-bind-innerHTML]') : []));
+  nodes=nodes.concat(Array.from(root.querySelectorAll ? root.querySelectorAll('[data-spl-bind], [data-spl-bind-value], [data-spl-bind-checked], [data-spl-bind-textContent], [data-spl-bind-textcontent], [data-spl-bind-innerHTML], [data-spl-bind-innerhtml], [data-spl-bind-html-unsafe]') : []));
   nodes.forEach(function(el){
     var attrs=Array.from(el.attributes||[]);
     attrs.forEach(function(attr){
       if(attr.name==='data-spl-bind'){
         if(el.__splLegacyBound){return;}
         el.__splLegacyBound=true;
-        var signalName=attr.value;
-        var prop=el.getAttribute('data-spl-attr')||'textContent';
+        var signalName=SPL.normalizePath(attr.value);
+        if(!signalName){return;}
+        var prop=SPL.normalizeBindingProp(el.getAttribute('data-spl-attr')||'textContent');
         var update=function(value){SPL.applyBinding(el,prop,value);};
         update(SPL.read(signalName));
         SPL.subscribe(signalName,update);
@@ -535,7 +665,7 @@ SPL.patchBindings=function(root){
         return;
       }
       if(attr.name.indexOf('data-spl-bind-')!==0){return;}
-      var propName=attr.name.slice('data-spl-bind-'.length);
+      var propName=SPL.normalizeBindingProp(attr.name.slice('data-spl-bind-'.length));
       var expr=attr.value;
       var path=SPL.normalizePath(expr);
       var bindKey='__splBind_'+propName+'_'+expr;
@@ -717,7 +847,7 @@ SPL.patchSchemaArrays=function(root){
       arr=SPL.schemaArrayEnsureBounds(path,arr,min,max,defaultValue);
       var html=arr.map(function(_,index){return SPL.schemaArrayRenderHTML(template,path,index,arr.length,min);}).join('');
       var focusSnapshot=SPL.captureFocus(itemsEl);
-      itemsEl.innerHTML=html || '<div class="spl-schema-empty">No items</div>';
+      itemsEl.innerHTML=html || '<div class="spl-schema-empty">'+SPL.escapeHTML(emptyMessage)+'</div>';
       var addButtons=Array.from(host.querySelectorAll('[data-spl-schema-array-action="add"][data-spl-schema-array-path="'+path+'"]'));
       addButtons.forEach(function(addButton){addButton.disabled=!addable || arr.length>=max;});
       var removeButtons=Array.from(host.querySelectorAll('[data-spl-schema-array-action="remove"][data-spl-schema-array-path="'+path+'"]'));
@@ -780,22 +910,31 @@ const moduleAPI = `SPL.apiParse=function(res, mode){
   return res.text();
 };
 SPL.assignPath=function(target,path,value){
-  if(typeof path!=='string' || !path){return;}
+  path=SPL.normalizePath(path);
+  if(typeof target!=='object' || target==null || !path){return;}
   var parts=path.split('.');
   var cur=target;
   for(var i=0;i<parts.length-1;i++){
     var key=parts[i];
     if(!key){return;}
-    if(cur[key]==null || typeof cur[key]!=='object' || Array.isArray(cur[key])){cur[key]={};}
+    if(cur[key]==null || typeof cur[key]!=='object' || Array.isArray(cur[key])){cur[key]=Object.create(null);}
     cur=cur[key];
   }
   var last=parts[parts.length-1];
   if(last){cur[last]=value;}
 };
+SPL.appendQueryValue=function(params,name,value){
+  if(Array.isArray(value)){
+    value.forEach(function(item){params.append(name,item==null?'':String(item));});
+    return;
+  }
+  params.append(name,value==null?'':String(value));
+};
 SPL.serializeForm=function(form){
   var payload={};
   var radioGroups={};
   var checkboxGroups={};
+  var checkboxModes={};
   if(!form){return payload;}
   Array.from(form.elements||[]).forEach(function(field){
     if(!field.name || field.disabled){return;}
@@ -804,6 +943,7 @@ SPL.serializeForm=function(form){
       return;
     }
     if(field.type==='checkbox'){
+      checkboxModes[field.name]=field.getAttribute('data-spl-checkbox-mode')||'auto';
       if(field.checked){
         if(!checkboxGroups[field.name]){checkboxGroups[field.name]=[];}
         checkboxGroups[field.name].push(field.value || true);
@@ -815,9 +955,23 @@ SPL.serializeForm=function(form){
   Object.keys(radioGroups).forEach(function(name){SPL.assignPath(payload,name,radioGroups[name]);});
   Object.keys(checkboxGroups).forEach(function(name){
     var values=checkboxGroups[name];
-    SPL.assignPath(payload,name,values.length===1?true:values);
+    var mode=checkboxModes[name];
+    var value=mode==='boolean'?values.length>0:values.length===1?values[0]:values;
+    SPL.assignPath(payload,name,value);
   });
   return payload;
+};
+SPL.apiURLWithQuery=function(url,data){
+  var params;
+  if(typeof URLSearchParams==='function'){
+    params=new URLSearchParams();
+  } else {
+    params={append:function(name,value){this[name]=value;},toString:function(){var out=[];for(var k in this){if(Object.prototype.hasOwnProperty.call(this,k)){out.push(encodeURIComponent(k)+'='+encodeURIComponent(this[k]));}}return out.join('&');}};
+  }
+  Object.keys(data||{}).forEach(function(k){SPL.appendQueryValue(params,k,data[k]);});
+  var qs=params.toString();
+  if(!qs){return url;}
+  return url+(url.indexOf('?')>=0?'&':'?')+qs;
 };
 SPL.patchAPI=function(root){
   var nodes=(root.matches && root.matches('[data-spl-api-url]'))?[root]:[];
@@ -834,6 +988,12 @@ SPL.patchAPI=function(root){
       var resetSignals=(el.getAttribute('data-spl-api-reset')||'').split(',').map(function(v){return v.trim();}).filter(Boolean);
       var headers={};
       var body=null;
+      var controller=null;
+      if(typeof AbortController==='function'){
+        if(el.__splApiController){el.__splApiController.abort();}
+        controller=new AbortController();
+        el.__splApiController=controller;
+      }
       if(bodyTemplate!==''){
         body=SPL.resolveTemplate(bodyTemplate);
         headers['Content-Type']=el.getAttribute('data-spl-api-content-type')||'application/json';
@@ -845,18 +1005,42 @@ SPL.patchAPI=function(root){
           form = el.closest('form');
         }
         if(form){
-          headers['Content-Type']=el.getAttribute('data-spl-api-content-type')||'application/json';
-          body=JSON.stringify(SPL.serializeForm(form));
+          var data=SPL.serializeForm(form);
+          if(method==='GET' || method==='HEAD'){
+            url=SPL.apiURLWithQuery(url,data);
+          } else {
+            headers['Content-Type']=el.getAttribute('data-spl-api-content-type')||'application/json';
+            body=JSON.stringify(data);
+          }
         }
       }
-      return fetch(url,{method:method,headers:headers,body:body}).then(function(res){
+      var requestID=(el.__splApiRequestID||0)+1;
+      el.__splApiRequestID=requestID;
+      SPL._notifyHook('apiBefore',[el,{url:url,method:method,body:body}]);
+      var init={method:method,headers:headers,body:body};
+      if(controller){init.signal=controller.signal;}
+      return fetch(url,init).then(function(res){
+        if(requestID!==el.__splApiRequestID){return null;}
         return SPL.apiParse(res,parseMode).then(function(payload){
+          if(requestID!==el.__splApiRequestID){return null;}
+          if(!res.ok){
+            throw {status:res.status,payload:payload};
+          }
           if(target){SPL.writeTarget(target,payload);}
           resetSignals.forEach(function(name){SPL.writeTarget(name,'');});
+          SPL._notifyHook('apiAfter',[el,{status:res.status,payload:payload}]);
           return payload;
         });
       }).catch(function(err){
-        if(target){SPL.writeTarget(target,'API error: '+err.message);}
+        if(requestID!==el.__splApiRequestID){return;}
+        if(err && err.status){
+          SPL._notifyError('api',{status:err.status,payload:err.payload});
+          if(target){SPL.writeTarget(target,'API error: HTTP '+err.status);}
+          return;
+        }
+        if(String(err&&err.name)==='AbortError'){return;}
+        SPL._notifyError('api',err);
+        if(target){SPL.writeTarget(target,'API error: '+(err&&err.message?err.message:String(err)));}
       });
     };
     var eventName=(el.getAttribute('data-spl-api-event')||'click').toLowerCase();
@@ -881,24 +1065,26 @@ const moduleConditionals = `SPL.patchConditionals=function(root){
   ifNodes.forEach(function(el){
     if(el.__splIfBound){return;}
     el.__splIfBound=true;
-    var name=el.getAttribute('data-spl-if');
-    var update=function(value){
-      el.style.display=Boolean(value)?'':'none';
+    var path=el.getAttribute('data-spl-if');
+    var rootSignal=path.indexOf('.')>=0?path.split('.')[0]:path;
+    var update=function(){
+      el.style.display=Boolean(SPL.readTarget(path))?'':'none';
     };
-    update(SPL.read(name));
-    SPL.subscribe(name,update);
+    update();
+    SPL.subscribe(rootSignal,update);
   });
   var elseNodes=(root.matches && root.matches('[data-spl-else]'))?[root]:[];
   elseNodes=elseNodes.concat(Array.from(root.querySelectorAll ? root.querySelectorAll('[data-spl-else]') : []));
   elseNodes.forEach(function(el){
     if(el.__splElseBound){return;}
     el.__splElseBound=true;
-    var name=el.getAttribute('data-spl-else');
-    var update=function(value){
-      el.style.display=Boolean(value)?'none':'';
+    var path=el.getAttribute('data-spl-else');
+    var rootSignal=path.indexOf('.')>=0?path.split('.')[0]:path;
+    var update=function(){
+      el.style.display=Boolean(SPL.readTarget(path))?'none':'';
     };
-    update(SPL.read(name));
-    SPL.subscribe(name,update);
+    update();
+    SPL.subscribe(rootSignal,update);
   });
 };`
 
@@ -963,7 +1149,7 @@ SPL.patchForms=function(root){
 // splBootstrapJS reads inert JSON hydration payloads and wires up the page
 // without inline bootstrap code.
 const splBootstrapJS = `SPL.bootPayload=function(payload){
-SPL.allowUnsafeEval=payload.secure===false;
+SPL.allowUnsafeEval=SPL.compiledWithUnsafeEval===true && payload.secure===false;
 Object.keys(payload.signals||{}).forEach(function(name){
 SPL.ensureSignal(name,payload.signals[name]);
 });
@@ -1099,10 +1285,11 @@ func init() {
 }
 
 // encodeString converts a string literal to a char-code array decoding expression.
-// Short strings (< 8 chars) are left as-is.
+// Short strings (< 8 chars) use JSON quoting for safety.
 func encodeString(s string) string {
 	if len(s) < 8 {
-		return "'" + s + "'"
+		b, _ := json.Marshal(s)
+		return string(b)
 	}
 	var codes []string
 	for _, c := range s {
@@ -1152,18 +1339,18 @@ func minifyJS(src string) string {
 
 	inString := byte(0) // 0, '\'' or '"'
 	prevWasSpace := false
-	prev := byte(0)
+	lastWritten := byte(0)
 
 	for i := 0; i < len(src); i++ {
 		c := src[i]
 
 		// Inside string literal: pass through unchanged
 		if inString != 0 {
-			if c == inString && prev != '\\' {
+			if c == inString && lastWritten != '\\' {
 				inString = 0
 			}
 			sb.WriteByte(c)
-			prev = c
+			lastWritten = c
 			prevWasSpace = false
 			continue
 		}
@@ -1171,15 +1358,15 @@ func minifyJS(src string) string {
 		// Entering string literal
 		if c == '\'' || c == '"' || c == '`' {
 			if prevWasSpace && sb.Len() > 0 {
-				last := sb.String()[sb.Len()-1]
-				if isWordChar(last) {
+				if isWordChar(lastWritten) {
 					sb.WriteByte(' ')
+					lastWritten = ' '
 				}
 			}
 			prevWasSpace = false
 			inString = c
 			sb.WriteByte(c)
-			prev = c
+			lastWritten = c
 			continue
 		}
 
@@ -1191,15 +1378,15 @@ func minifyJS(src string) string {
 
 		// Non-whitespace: emit deferred space if needed
 		if prevWasSpace && sb.Len() > 0 {
-			last := sb.String()[sb.Len()-1]
-			if needsSpaceBetween(last, c) {
+			if needsSpaceBetween(lastWritten, c) {
 				sb.WriteByte(' ')
+				lastWritten = ' '
 			}
 			prevWasSpace = false
 		}
 
 		sb.WriteByte(c)
-		prev = c
+		lastWritten = c
 	}
 	return sb.String()
 }
@@ -1411,17 +1598,6 @@ func getObfuscatedForFeatures(features jsFeature, disableDebug, secureMode bool)
 	return obfuscated
 }
 
-var obfuscatedBootstrap string
-
-func init() {
-	// Apply the same property mangling to bootstrap as to the runtime
-	boot := splBootstrapJS
-	for orig, mangled := range propManglingMap {
-		boot = strings.ReplaceAll(boot, "SPL."+orig, "SPL."+mangled)
-	}
-	obfuscatedBootstrap = minifyJS(boot)
-}
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -1430,7 +1606,7 @@ func init() {
 // with all features included. Serve this as a static .js file and set
 // Engine.HydrationRuntimeURL to enable browser caching across pages.
 func (e *Engine) RuntimeJS() string {
-	return getObfuscatedFull(e.DisableDebug, e.SecureMode)
+	return getObfuscatedForFeatures(featAll, e.DisableDebug, e.SecureMode)
 }
 
 // RuntimeJSRaw returns the unobfuscated, minified SPL hydration runtime.
