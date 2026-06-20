@@ -172,14 +172,12 @@ func (e *Engine) renderHydrationScript(renderedHTML string) string {
 		sb.WriteString(html.EscapeString(e.HydrationRuntimeURL))
 		sb.WriteString(`"></script>`)
 	} else {
-		features := featAll
+		features := detectFeatures(renderedHTML, e.hydration.Effects, e.hydration.Views)
+		if !e.DisableDebug {
+			features |= featDebug
+		}
 		if e.DisableAPI {
 			features &^= featAPI
-		}
-		if e.DisableDebug {
-			features &^= featDebug
-		} else {
-			features |= featDebug
 		}
 		runtime := getObfuscatedForFeatures(features, e.DisableDebug, e.SecureMode)
 		sb.WriteString(`<script data-spl-runtime`)

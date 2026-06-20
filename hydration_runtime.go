@@ -1301,6 +1301,8 @@ func encodeString(s string) string {
 // obfuscateJS applies obfuscation to a JS source string:
 //   - Property mangling: SPL.internalProp → SPL._xx
 //   - String encoding: 'data-spl-xxx' → charCode array
+//   - Comment stripping
+//   - Redundant semicolon removal
 //   - Whitespace minification
 func obfuscateJS(src string) string {
 	result := src
@@ -1315,7 +1317,13 @@ func obfuscateJS(src string) string {
 	// Only encode strings in single quotes that contain 'data-spl-'.
 	result = encodeDataSPLStrings(result)
 
-	// 3. Minify: collapse whitespace
+	// 3. Remove comments (string-literal aware)
+	result = stripJSComments(result)
+
+	// 4. Remove redundant semicolons that contribute no meaning
+	result = removeRedundantSemicolons(result)
+
+	// 5. Minify: collapse whitespace
 	result = minifyJS(result)
 
 	return result
@@ -1329,6 +1337,129 @@ func encodeDataSPLStrings(src string) string {
 		inner := match[1 : len(match)-1]
 		return encodeString(inner)
 	})
+}
+
+// stripJSComments removes single-line (//) and block (/* */) comments from JS source.
+// It is string-literal-aware to avoid breaking quoted content.
+func stripJSComments(src string) string {
+	var sb strings.Builder
+	sb.Grow(len(src))
+
+	inString := byte(0)
+	lastWritten := byte(0)
+
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+
+		if inString != 0 {
+			if c == inString && lastWritten != '\\' {
+				inString = 0
+			}
+			sb.WriteByte(c)
+			lastWritten = c
+			continue
+		}
+
+		if c == '\'' || c == '"' || c == '`' {
+			inString = c
+			sb.WriteByte(c)
+			lastWritten = c
+			continue
+		}
+
+		// Single-line comment: //
+		if c == '/' && i+1 < len(src) && src[i+1] == '/' {
+			for i += 2; i < len(src); i++ {
+				if src[i] == '\n' || src[i] == '\r' {
+					break
+				}
+			}
+			lastWritten = '\n'
+			continue
+		}
+
+		// Block comment: /* */
+		if c == '/' && i+1 < len(src) && src[i+1] == '*' {
+			for i += 2; i < len(src); i++ {
+				if src[i] == '*' && i+1 < len(src) && src[i+1] == '/' {
+					i++ // skip the '/'
+					break
+				}
+			}
+			lastWritten = ' '
+			continue
+		}
+
+		sb.WriteByte(c)
+		lastWritten = c
+	}
+
+	// Collapse multiple consecutive newlines/whitespace into one
+	cleaned := collapseRepeatedWhitespace(sb.String())
+	return cleaned
+}
+
+// collapseRepeatedWhitespace reduces runs of whitespace to a single space,
+// but preserves newlines (collapsing consecutive newlines to one).
+func collapseRepeatedWhitespace(s string) string {
+	var sb strings.Builder
+	sb.Grow(len(s))
+	prevWS := false
+	prevNL := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\n' || c == '\r' {
+			if !prevNL {
+				sb.WriteByte('\n')
+			}
+			prevNL = true
+			prevWS = true
+			continue
+		}
+		prevNL = false
+		if c == ' ' || c == '\t' {
+			if !prevWS {
+				sb.WriteByte(' ')
+			}
+			prevWS = true
+			continue
+		}
+		sb.WriteByte(c)
+		prevWS = false
+	}
+	return sb.String()
+}
+
+// removeRedundantSemicolons removes semicolons that are unnecessary in JS:
+//   - Semicolons before closing braces: ;} → }
+//   - Trailing semicolons at end of output
+func removeRedundantSemicolons(src string) string {
+	inString := byte(0)
+	lastWritten := byte(0)
+	lastNonSpace := byte(0)
+
+	for i := 0; i < len(src); i++ {
+		if inString != 0 {
+			if src[i] == inString && lastWritten != '\\' {
+				inString = 0
+			}
+			lastWritten = src[i]
+			continue
+		}
+		if src[i] == '\'' || src[i] == '"' || src[i] == '`' {
+			inString = src[i]
+			lastWritten = src[i]
+			continue
+		}
+		lastWritten = src[i]
+		lastNonSpace = src[i]
+	}
+
+	if lastNonSpace == ';' {
+		src = src[:len(src)-1]
+	}
+
+	return strings.ReplaceAll(src, ";}", "}")
 }
 
 // minifyJS removes unnecessary whitespace from JS source.
@@ -1562,8 +1693,7 @@ func detectFeatures(renderedHTML string, effects []hydrationEffect, views []hydr
 // ---------------------------------------------------------------------------
 
 func getObfuscatedFull(disableDebug, secureMode bool) string {
-	raw := assembleRuntime(featAll, disableDebug, secureMode)
-	return obfuscateJS(raw)
+	return getObfuscatedForFeatures(featAll, disableDebug, secureMode)
 }
 
 // moduleCache caches obfuscated modules by feature bitmask
@@ -1614,4 +1744,13 @@ func (e *Engine) RuntimeJS() string {
 func (e *Engine) RuntimeJSRaw() string {
 	raw := assembleRuntime(featAll, e.DisableDebug, e.SecureMode)
 	return minifyJS(raw)
+}
+
+// ClearRuntimeCache clears the in-memory cache of obfuscated runtime modules.
+// Call this if you change runtime configuration (e.g. SecureMode) at runtime
+// and need previously cached variants to be rebuilt.
+func ClearRuntimeCache() {
+	moduleCache.Lock()
+	moduleCache.cache = make(map[jsFeature]string)
+	moduleCache.Unlock()
 }
