@@ -708,7 +708,7 @@ func (e *Engine) renderIf(n *IfNode, env *interpreter.Environment, data map[stri
 				if err != nil {
 					return "", err
 				}
-				if interpreter.IsTruthy(current) {
+				if isConditionalRenderTruthy(current) {
 					return fmt.Sprintf(`<div data-spl-if="%s">%s</div><div data-spl-else="%s" style="display:none">%s</div>`, html.EscapeString(signalName), whenTrue, html.EscapeString(signalName), whenFalse), nil
 				}
 				return fmt.Sprintf(`<div data-spl-if="%s" style="display:none">%s</div><div data-spl-else="%s">%s</div>`, html.EscapeString(signalName), whenTrue, html.EscapeString(signalName), whenFalse), nil
@@ -720,7 +720,7 @@ func (e *Engine) renderIf(n *IfNode, env *interpreter.Environment, data map[stri
 		if err != nil {
 			return "", fmt.Errorf("@if condition: %w", err)
 		}
-		if interpreter.IsTruthy(obj) {
+		if isConditionalRenderTruthy(obj) {
 			return e.renderBody(branch.Body, env, data, depth)
 		}
 	}

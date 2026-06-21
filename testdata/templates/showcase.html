@@ -32,6 +32,21 @@
     }
   </section>
 
+  @// --- Enhanced @if with loose truthiness ---
+  <section id="if-truthy">
+    <h2>@if Loose Truthiness</h2>
+    <p><code>@if(name)</code> is false for nil, empty string, or false:</p>
+    @if(name) {
+    <p>Hello, ${name}!</p>
+    } @else {
+    <p>No name provided.</p>
+    }
+    <p><code>@if(count)</code> with count=0 is still truthy (zero is a valid number):</p>
+    @if(count) {
+    <p>Count: ${count}</p>
+    }
+  </section>
+
   @// --- Loops with arrays ---
   <section id="products">
     <h2>Product Catalog</h2>

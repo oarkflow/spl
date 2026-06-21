@@ -311,6 +311,66 @@ func TestIfElseif(t *testing.T) {
 	}
 }
 
+func TestIfEmptyString(t *testing.T) {
+	e := New()
+	e.AutoEscape = false
+	out, err := e.Render(`@if(name) {<p>${name}</p>}`, map[string]any{"name": ""})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "" {
+		t.Fatalf("expected empty, got %q", out)
+	}
+}
+
+func TestIfEmptyStringElse(t *testing.T) {
+	e := New()
+	e.AutoEscape = false
+	out, err := e.Render(`@if(name) {<p>${name}</p>} @else {<p>empty</p>}`, map[string]any{"name": ""})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "<p>empty</p>" {
+		t.Fatalf("expected <p>empty</p>, got %q", out)
+	}
+}
+
+func TestIfNil(t *testing.T) {
+	e := New()
+	e.AutoEscape = false
+	out, err := e.Render(`@if(name) {<p>${name}</p>}`, map[string]any{"name": nil})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "" {
+		t.Fatalf("expected empty, got %q", out)
+	}
+}
+
+func TestIfNonEmptyString(t *testing.T) {
+	e := New()
+	e.AutoEscape = false
+	out, err := e.Render(`@if(name) {<p>${name}</p>}`, map[string]any{"name": "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "<p>hello</p>" {
+		t.Fatalf("expected <p>hello</p>, got %q", out)
+	}
+}
+
+func TestIfZero(t *testing.T) {
+	e := New()
+	e.AutoEscape = false
+	out, err := e.Render(`@if(count) {<p>${count}</p>}`, map[string]any{"count": 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "<p>0</p>" {
+		t.Fatalf("expected <p>0</p>, got %q", out)
+	}
+}
+
 func TestForArray(t *testing.T) {
 	e := New()
 	e.AutoEscape = false
