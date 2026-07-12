@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -98,5 +100,21 @@ func TestFiberDemoRendersCacheableHydrationAsset(t *testing.T) {
 	}
 	if strings.Index(html, `data-spl-runtime`) > strings.Index(html, `data-spl-hydration`) {
 		t.Fatal("runtime must load before executable hydration")
+	}
+}
+
+func TestRenderReportsTemplateParseErrors(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "broken.html"), []byte("@if(true) {"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := New(dir)
+	if err := engine.Load(); err != nil {
+		t.Fatal(err)
+	}
+	err := engine.Render(&strings.Builder{}, "broken", nil)
+	if err == nil || !strings.Contains(err.Error(), "render broken.html") {
+		t.Fatalf("expected a template parse error, got %v", err)
 	}
 }

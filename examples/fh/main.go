@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gofiber/fiber/v3"
+	fiber "github.com/oarkflow/fh"
 	template "github.com/oarkflow/spl"
 )
 
@@ -103,17 +103,8 @@ func (v *SPLViews) HydrationAsset(name string) (string, bool) {
 func (v *SPLViews) Load() error {
 	v.engine.BaseDir = v.directory
 	v.engine.AutoEscape = true
-	return filepath.Walk(v.directory, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
-			return err
-		}
-		if !strings.HasSuffix(path, v.extension) {
-			return nil
-		}
-		rel, _ := filepath.Rel(v.directory, path)
-		_, _ = v.engine.RenderFile(rel, nil)
-		return nil
-	})
+	_, err := os.Stat(v.directory)
+	return err
 }
 
 func (v *SPLViews) Render(w io.Writer, name string, binding any, layout ...string) error {
@@ -186,8 +177,11 @@ func main() {
 	engine.HydrationAssets("/static")
 
 	engine.engine.Globals["siteName"] = "SPL Fiber Demo"
+	if err := engine.Load(); err != nil {
+		log.Fatalf("parse templates: %v", err)
+	}
 
-	app := fiber.New(fiber.Config{Views: engine})
+	app := fiber.New(fiber.WithTemplateEngine(engine))
 
 	app.Use(func(c fiber.Ctx) error {
 		c.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'")
@@ -248,7 +242,7 @@ func main() {
 
 	app.Post("/api/submit", func(c fiber.Ctx) error {
 		var payload map[string]any
-		if err := c.Bind().JSON(&payload); err != nil {
+		if err := c.BodyParser(&payload); err != nil {
 			return c.Status(400).JSON(fiber.Map{"error": "Invalid JSON", "success": false})
 		}
 		return c.JSON(fiber.Map{
@@ -291,7 +285,7 @@ func main() {
 
 	app.Post("/api/todos", func(c fiber.Ctx) error {
 		var form map[string]any
-		if err := c.Bind().JSON(&form); err != nil {
+		if err := c.BodyParser(&form); err != nil {
 			return c.Status(400).JSON(fiber.Map{"error": "Invalid JSON"})
 		}
 		todoMu.Lock()
