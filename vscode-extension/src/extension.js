@@ -1,8 +1,10 @@
 const cp = require("child_process");
 const path = require("path");
 const vscode = require("vscode");
+const { format } = require("../formatter");
 
 let server;
+let output;
 let extensionPath;
 let workspaceRoot;
 let nextId = 1;
@@ -16,6 +18,8 @@ const semanticLegend = new vscode.SemanticTokensLegend(
 
 function activate(context) {
   extensionPath = context.extensionPath;
+  output = vscode.window.createOutputChannel("Oarkflow Template");
+  context.subscriptions.push(output);
   workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || context.extensionPath;
   startServer();
 
@@ -23,10 +27,21 @@ function activate(context) {
   context.subscriptions.push(vscode.workspace.onDidOpenTextDocument(syncDocument));
   context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(e => syncDocument(e.document)));
   context.subscriptions.push(vscode.workspace.onDidCloseTextDocument(doc => diagnostics.delete(doc.uri)));
-  context.subscriptions.push(vscode.commands.registerCommand("oarkflowTemplate.showStatus", () => {
-    const active = vscode.window.activeTextEditor?.document;
-    vscode.window.showInformationMessage(`Oarkflow Template extension active. Document language: ${active?.languageId || "none"}. Server: ${server?.stdin?.writable ? "running" : "not running"}.`);
-  }));
+  context.subscriptions.push(vscode.commands.registerCommand("oarkflowTemplate.formatDocument", () =>
+    runFormatCommand(editor => formatWholeDocument(editor.document, editorOptions(editor), { verbose: true }))
+  ));
+
+  context.subscriptions.push(vscode.commands.registerCommand("oarkflowTemplate.formatSelection", () =>
+    runFormatCommand(editor => {
+      const selection = editor.selection;
+      if (selection.isEmpty) {
+        return formatWholeDocument(editor.document, editorOptions(editor), { verbose: true });
+      }
+      return formatRange(editor.document, selection, editorOptions(editor), { verbose: true });
+    })
+  ));
+
+  context.subscriptions.push(vscode.commands.registerCommand("oarkflowTemplate.showStatus", () => showStatus(context)));
 
   for (const doc of vscode.workspace.textDocuments) syncDocument(doc);
 
@@ -96,10 +111,160 @@ function activate(context) {
       return buildSemanticTokens(document);
     }
   }, semanticLegend));
+
+  context.subscriptions.push(vscode.languages.registerDocumentFormattingEditProvider(selector, {
+    provideDocumentFormattingEdits(document, options) {
+      if (!isFormattingEnabled(document)) return;
+      return formatWholeDocument(document, options) || [];
+    }
+  }));
+
+  context.subscriptions.push(vscode.languages.registerDocumentRangeFormattingEditProvider(selector, {
+    provideDocumentRangeFormattingEdits(document, range, options) {
+      if (!isFormattingEnabled(document)) return;
+      return formatRange(document, range, options) || [];
+    }
+  }));
 }
 
 function deactivate() {
   server?.kill();
+}
+
+/* ------------------------------------------------------------- diagnostics */
+
+// Reports everything needed to explain why tooling is or is not active on the
+// current file, including another extension having claimed the file type.
+function showStatus(context) {
+  const document = vscode.window.activeTextEditor?.document;
+  const version = context.extension?.packageJSON?.version || "unknown";
+  const lines = [`Oarkflow Template v${version}`, `Server: ${server?.stdin?.writable ? "running" : "not running"}`];
+
+  if (!document) {
+    lines.push("No active editor.");
+  } else {
+    const file = path.basename(document.uri.fsPath || document.uri.toString());
+    lines.push(`File: ${file}`, `Language: ${document.languageId}`);
+    lines.push(`SPL tooling: ${isEnabled(document) ? "enabled" : "disabled"}`);
+    lines.push(`Formatter: ${isFormattingEnabled(document) ? "enabled" : "disabled"}`);
+
+    if (/\.spl$/.test(document.uri.fsPath || "") && document.languageId !== "spl-template") {
+      const owner = conflictingExtensionFor(".spl", document.languageId);
+      lines.push(
+        `Warning: .spl is being handled as "${document.languageId}"${owner ? ` by ${owner}` : ""}, not "spl-template".`,
+        `Fix with: "files.associations": { "*.spl": "spl-template" }`
+      );
+    }
+  }
+
+  output?.appendLine(lines.join("\n"));
+  output?.show(true);
+  vscode.window.showInformationMessage(lines.join(" | "));
+}
+
+// Finds another installed extension that claims the same file extension.
+function conflictingExtensionFor(fileExtension, languageId) {
+  for (const ext of vscode.extensions?.all || []) {
+    if (ext.id === "oarkflow.oarkflow-template-vscode") continue;
+    const languages = ext.packageJSON?.contributes?.languages || [];
+    for (const lang of languages) {
+      if (lang.id === languageId && (lang.extensions || []).includes(fileExtension)) return ext.id;
+    }
+  }
+  return null;
+}
+
+/* -------------------------------------------------------------- formatting */
+
+// Runs a formatting command against the active editor. Unlike the editor's own
+// Format Document, this never depends on `editor.defaultFormatter`, so it works
+// even when another extension owns HTML formatting.
+async function runFormatCommand(produceEdits) {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) {
+    vscode.window.showWarningMessage("SPL: open a template file first.");
+    return;
+  }
+  const document = editor.document;
+  if (!isEnabled(document)) {
+    vscode.window.showWarningMessage(
+      `SPL: ${path.basename(document.uri.fsPath || document.uri.toString())} is not an SPL template (.spl, .spl.html, .tmpl, or an HTML file with SPL enabled).`
+    );
+    return;
+  }
+  const edits = produceEdits(editor);
+  if (!edits || !edits.length) {
+    // Either nothing to change, or the formatter declined and already reported why.
+    vscode.window.setStatusBarMessage("SPL: already formatted", 3000);
+    return;
+  }
+  await editor.edit(builder => {
+    for (const edit of edits) builder.replace(edit.range, edit.newText);
+  });
+}
+
+function isFormattingEnabled(document) {
+  if (!isEnabled(document)) return false;
+  return vscode.workspace.getConfiguration("oarkflowTemplate", document.uri).get("format.enable", true);
+}
+
+function editorOptions(editor) {
+  return {
+    tabSize: editor.options.tabSize,
+    insertSpaces: editor.options.insertSpaces
+  };
+}
+
+function formatterOptions(document, options) {
+  const config = vscode.workspace.getConfiguration("oarkflowTemplate", document.uri);
+  return {
+    tabWidth: Number(options?.tabSize) || 2,
+    useTabs: options?.insertSpaces === false,
+    printWidth: config.get("format.printWidth", 120),
+    whitespaceSensitivity: config.get("format.whitespaceSensitivity", "css"),
+    bracketSameLine: config.get("format.bracketSameLine", false),
+    indentEmbeddedCode: config.get("format.indentEmbeddedCode", true)
+  };
+}
+
+function runFormatter(document, text, options, meta) {
+  try {
+    return format(text, options);
+  } catch (err) {
+    const message = `${path.basename(document.uri.fsPath || document.uri.toString())}: ${err.message}`;
+    output?.appendLine(`[format] ${message}`);
+    if (meta?.verbose) vscode.window.showWarningMessage(`Oarkflow Template — ${message}`);
+    return null;
+  }
+}
+
+function formatWholeDocument(document, options, meta) {
+  const original = document.getText();
+  const formatted = runFormatter(document, original, formatterOptions(document, options), meta);
+  if (formatted == null || formatted === original) return null;
+  const full = new vscode.Range(document.positionAt(0), document.positionAt(original.length));
+  return [vscode.TextEdit.replace(full, formatted)];
+}
+
+// Range formatting re-indents just the selected lines. The selection keeps the
+// indentation of its first line so the block stays where the author put it.
+function formatRange(document, range, options, meta) {
+  const start = new vscode.Position(range.start.line, 0);
+  const endLine = document.lineAt(range.end.line);
+  const expanded = new vscode.Range(start, endLine.range.end);
+  const original = document.getText(expanded);
+  if (!original.trim()) return null;
+
+  // The formatter indents from `baseIndent` itself, so verbatim blocks inside
+  // the selection are not shifted along with the rest.
+  const baseIndent = /^[\t ]*/.exec(document.lineAt(range.start.line).text)[0];
+  const opts = Object.assign({}, formatterOptions(document, options), { baseIndent });
+
+  const formatted = runFormatter(document, original, opts, meta);
+  if (formatted == null) return null;
+  const trimmed = formatted.replace(/\n$/, "");
+  if (trimmed === original) return null;
+  return [vscode.TextEdit.replace(expanded, trimmed)];
 }
 
 function startServer() {
@@ -556,3 +721,4 @@ function buildSemanticTokens(document) {
 }
 
 module.exports = { activate, deactivate };
+module.exports.__test = { formatWholeDocument, formatRange, formatterOptions };

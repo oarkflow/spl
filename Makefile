@@ -6,7 +6,7 @@ VSCODE_CLI ?= code
 .PHONY: vscode-extension-check install-extension uninstall-old-spl-extension reload-vscode vscode-extension features
 
 vscode-extension-check:
-	cd $(VSCODE_EXTENSION_DIR) && npm run check
+	cd $(VSCODE_EXTENSION_DIR) && npm run check && npm test
 
 install-extension: vscode-extension-check
 	mkdir -p "$(HOME)/.vscode/extensions"

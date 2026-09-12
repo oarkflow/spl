@@ -1,8 +1,10 @@
 {
   "comments": {
-    "lineComment": "@//"
+    "lineComment": "@//",
+    "blockComment": ["<!--", "-->"]
   },
   "brackets": [
+    ["<!--", "-->"],
     ["{", "}"],
     ["(", ")"],
     ["[", "]"]
@@ -13,20 +15,43 @@
     { "open": "[", "close": "]" },
     { "open": "\"", "close": "\"" },
     { "open": "'", "close": "'" },
-    { "open": "${", "close": "}" }
+    { "open": "${", "close": "}" },
+    { "open": "<!--", "close": " -->", "notIn": ["comment", "string"] }
   ],
   "surroundingPairs": [
     ["{", "}"],
     ["(", ")"],
     ["[", "]"],
     ["\"", "\""],
-    ["'", "'"]
+    ["'", "'"],
+    ["<", ">"]
   ],
   "folding": {
     "markers": {
-      "start": "^\\s*@(if|for|switch|match|raw|block|define|component|render|fill|watch|effect|reactive|stream|defer|lazy)\\b.*\\{\\s*$",
+      "start": "^\\s*@(if|elseif|else|for|empty|switch|match|case|default|raw|block|define|prepend|append|hasBlock|component|render|fill|watch|effect|reactive|stream|defer|lazy|fallback|cache|translate|handler)\\b.*\\{\\s*$",
       "end": "^\\s*}\\s*$"
     }
   },
-  "wordPattern": "(@[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_.-]*)"
+  "wordPattern": "(@[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_.-]*)",
+  "indentationRules": {
+    "increaseIndentPattern": "<(?!\\?|(?:area|base|br|col|frame|hr|html|img|input|keygen|link|menuitem|meta|param|source|track|wbr)\\b|[^>]*\\/>)([-_\\.A-Za-z0-9]+)(?=\\s|>)\\b[^>]*>(?!.*<\\/\\1>)|<!--(?!.*-->)|\\{[^}\"'`]*$",
+    "decreaseIndentPattern": "^\\s*(<\\/(?!html)[-_\\.A-Za-z0-9]+\\b[^>]*>|-->|\\}|\\)\\s*\\{?)"
+  },
+  "onEnterRules": [
+    {
+      "beforeText": "^\\s*@(if|elseif|else|for|empty|switch|match|case|default|block|define|prepend|append|hasBlock|component|render|fill|watch|effect|reactive|stream|defer|lazy|fallback|cache|translate)\\b.*\\{\\s*$",
+      "afterText": "^\\s*\\}",
+      "action": { "indent": "indentOutdent" }
+    },
+    {
+      "beforeText": "^\\s*@(if|elseif|else|for|empty|switch|match|case|default|block|define|prepend|append|hasBlock|component|render|fill|watch|effect|reactive|stream|defer|lazy|fallback|cache|translate)\\b.*\\{\\s*$",
+      "action": { "indent": "indent" }
+    },
+    {
+      "beforeText": "^\\s*\\}\\s*@(elseif|else|empty|fallback)\\b.*\\{\\s*$",
+      "action": { "indent": "indent" }
+    }
+  ],
+  "autoCloseBefore": ";:.,=}])>` \n\t",
+  "colorizedBracketPairs": []
 }

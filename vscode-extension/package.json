@@ -1,20 +1,25 @@
 {
   "name": "oarkflow-template-vscode",
   "displayName": "Oarkflow Template",
-  "description": "Language tooling for Oarkflow SPL template files.",
-  "version": "0.1.6",
+  "description": "Language tooling and a formatter for Oarkflow SPL template files.",
+  "version": "0.2.1",
   "publisher": "oarkflow",
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
     "Programming Languages",
+    "Formatters",
     "Snippets"
   ],
   "main": "./src/extension.js",
   "activationEvents": [
     "onLanguage:spl-template",
     "onLanguage:html",
+    "onCommand:oarkflowTemplate.formatDocument",
+    "onCommand:oarkflowTemplate.formatSelection",
+    "onCommand:oarkflowTemplate.showStatus",
+    "workspaceContains:**/*.spl",
     "workspaceContains:**/*.spl.html",
     "workspaceContains:**/*.tmpl"
   ],
@@ -77,17 +82,88 @@
           "default": 200,
           "minimum": 10,
           "description": "Maximum SPL diagnostics reported per document."
+        },
+        "oarkflowTemplate.format.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the SPL/HTML document and range formatter."
+        },
+        "oarkflowTemplate.format.printWidth": {
+          "type": "number",
+          "default": 120,
+          "minimum": 20,
+          "description": "Column the formatter wraps at. Lines that cannot be broken safely may still exceed it."
+        },
+        "oarkflowTemplate.format.whitespaceSensitivity": {
+          "type": "string",
+          "enum": [
+            "css",
+            "strict",
+            "ignore"
+          ],
+          "default": "css",
+          "enumDescriptions": [
+            "Respect the default CSS display of each element: whitespace around inline elements is preserved, whitespace around block elements may be reflowed.",
+            "Never add or remove whitespace anywhere. Safest, but produces less compact output.",
+            "Reflow whitespace freely. Most compact, but can change rendering of inline content."
+          ],
+          "description": "How carefully the formatter preserves whitespace between elements."
+        },
+        "oarkflowTemplate.format.bracketSameLine": {
+          "type": "boolean",
+          "default": false,
+          "description": "Put the closing `>` of a multi-line start tag on the last attribute line instead of on its own line."
+        },
+        "oarkflowTemplate.format.indentEmbeddedCode": {
+          "type": "boolean",
+          "default": true,
+          "description": "Re-indent the contents of <script>, <style>, and @handler blocks to match the surrounding markup. The code itself is never rewritten."
         }
       }
     },
     "commands": [
       {
+        "command": "oarkflowTemplate.formatDocument",
+        "title": "Format This File",
+        "category": "SPL"
+      },
+      {
+        "command": "oarkflowTemplate.formatSelection",
+        "title": "Format Selection",
+        "category": "SPL"
+      },
+      {
         "command": "oarkflowTemplate.showStatus",
-        "title": "Oarkflow Template: Show Status"
+        "title": "Show Status",
+        "category": "SPL"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "oarkflowTemplate.formatDocument",
+          "when": "(resourceExtname == .spl || resourceExtname == .tmpl || editorLangId == spl-template || editorLangId == html) && !editorHasSelection",
+          "group": "1_modification@100"
+        },
+        {
+          "command": "oarkflowTemplate.formatSelection",
+          "when": "(resourceExtname == .spl || resourceExtname == .tmpl || editorLangId == spl-template || editorLangId == html) && editorHasSelection",
+          "group": "1_modification@100"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "oarkflowTemplate.formatDocument",
+        "key": "ctrl+alt+l",
+        "mac": "cmd+alt+l",
+        "when": "editorTextFocus && !editorReadonly && (resourceExtname == .spl || resourceExtname == .tmpl || editorLangId == spl-template || editorLangId == html)"
       }
     ]
   },
   "scripts": {
-    "check": "node --check src/extension.js && node --check server/server.js"
+    "check": "node --check src/extension.js && node --check server/server.js",
+    "test": "node --test \"formatter/test/*.test.js\"",
+    "verify:go": "node scripts/verify-go.js"
   }
 }
