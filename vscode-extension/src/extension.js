@@ -2,6 +2,7 @@ const cp = require("child_process");
 const path = require("path");
 const vscode = require("vscode");
 const { format } = require("../formatter");
+const { collectTemplateFiles, DEFAULT_EXCLUDED_FOLDERS } = require("./collect");
 
 let server;
 let output;
@@ -39,6 +40,10 @@ function activate(context) {
       }
       return formatRange(editor.document, selection, editorOptions(editor), { verbose: true });
     })
+  ));
+
+  context.subscriptions.push(vscode.commands.registerCommand("oarkflowTemplate.formatFolder", (uri, uris) =>
+    runFormatFolderCommand(uri, uris)
   ));
 
   context.subscriptions.push(vscode.commands.registerCommand("oarkflowTemplate.showStatus", () => showStatus(context)));
@@ -215,8 +220,8 @@ function editorOptions(editor) {
   };
 }
 
-function formatterOptions(document, options) {
-  const config = vscode.workspace.getConfiguration("oarkflowTemplate", document.uri);
+function formatterOptions(uri, options) {
+  const config = vscode.workspace.getConfiguration("oarkflowTemplate", uri);
   return {
     tabWidth: Number(options?.tabSize) || 2,
     useTabs: options?.insertSpaces === false,
@@ -240,7 +245,7 @@ function runFormatter(document, text, options, meta) {
 
 function formatWholeDocument(document, options, meta) {
   const original = document.getText();
-  const formatted = runFormatter(document, original, formatterOptions(document, options), meta);
+  const formatted = runFormatter(document, original, formatterOptions(document.uri, options), meta);
   if (formatted == null || formatted === original) return null;
   const full = new vscode.Range(document.positionAt(0), document.positionAt(original.length));
   return [vscode.TextEdit.replace(full, formatted)];
@@ -258,13 +263,201 @@ function formatRange(document, range, options, meta) {
   // The formatter indents from `baseIndent` itself, so verbatim blocks inside
   // the selection are not shifted along with the rest.
   const baseIndent = /^[\t ]*/.exec(document.lineAt(range.start.line).text)[0];
-  const opts = Object.assign({}, formatterOptions(document, options), { baseIndent });
+  const opts = Object.assign({}, formatterOptions(document.uri, options), { baseIndent });
 
   const formatted = runFormatter(document, original, opts, meta);
   if (formatted == null) return null;
   const trimmed = formatted.replace(/\n$/, "");
   if (trimmed === original) return null;
   return [vscode.TextEdit.replace(expanded, trimmed)];
+}
+
+/* ------------------------------------------------------ folder formatting */
+
+// Formats every template in one or more folders, recursively. Files already
+// open in an editor go through a workspace edit so the change is undoable and
+// unsaved work is never lost; the rest are rewritten on disk.
+async function runFormatFolderCommand(contextUri, contextUris) {
+  const targets = await resolveFolderTargets(contextUri, contextUris);
+  if (!targets.length) return;
+
+  const config = vscode.workspace.getConfiguration("oarkflowTemplate", targets[0]);
+  if (!config.get("format.enable", true)) {
+    vscode.window.showWarningMessage("SPL: the formatter is disabled (oarkflowTemplate.format.enable).");
+    return;
+  }
+
+  const found = collectTargets(targets, config);
+  if (found.errors.length) {
+    for (const err of found.errors) output?.appendLine(`[format folder] skipped ${err.path}: ${err.message}`);
+  }
+  if (!found.files.length) {
+    vscode.window.showInformationMessage(`SPL: no template files found in ${describeTargets(targets)}.`);
+    return;
+  }
+
+  const count = found.files.length;
+  const detail = [
+    `Extensions: ${found.extensions.join(", ")}`,
+    found.truncated ? `Stopped at the ${count}-file limit (oarkflowTemplate.format.maxFilesPerRun).` : "",
+    "Files are rewritten in place. Unsaved editors keep their unsaved state."
+  ].filter(Boolean).join("\n");
+  const choice = await vscode.window.showInformationMessage(
+    `Format ${count} template${count === 1 ? "" : "s"} in ${describeTargets(targets)}?`,
+    { modal: true, detail },
+    "Format"
+  );
+  if (choice !== "Format") return;
+
+  const summary = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: "SPL: formatting templates", cancellable: true },
+    (progress, token) => formatFiles(found.files, progress, token)
+  );
+
+  reportFolderResult(summary, count);
+}
+
+// Explorer passes the clicked resource plus the full multi-selection; the
+// command palette passes nothing, so the folder is asked for instead.
+async function resolveFolderTargets(contextUri, contextUris) {
+  const selected = (Array.isArray(contextUris) && contextUris.length ? contextUris : contextUri ? [contextUri] : [])
+    .filter(uri => uri && uri.scheme === "file");
+  if (selected.length) return dedupeUris(selected);
+
+  const folders = vscode.workspace.workspaceFolders || [];
+  if (folders.length === 1) return [folders[0].uri];
+  if (folders.length > 1) {
+    const picked = await vscode.window.showWorkspaceFolderPick({ placeHolder: "Select a folder to format" });
+    return picked ? [picked.uri] : [];
+  }
+  const picked = await vscode.window.showOpenDialog({
+    canSelectFiles: false,
+    canSelectFolders: true,
+    canSelectMany: false,
+    openLabel: "Format Templates"
+  });
+  return picked && picked.length ? [picked[0]] : [];
+}
+
+function dedupeUris(uris) {
+  const seen = new Map();
+  for (const uri of uris) seen.set(uri.toString(), uri);
+  return [...seen.values()];
+}
+
+function collectTargets(targets, config) {
+  const extensions = [".spl", ".spl.html", ".tmpl"];
+  if (config.get("enableHtmlFiles", true)) extensions.push(".html");
+  const options = {
+    extensions,
+    excludedFolders: config.get("format.excludeFolders", DEFAULT_EXCLUDED_FOLDERS),
+    maxFiles: config.get("format.maxFilesPerRun", 2000)
+  };
+
+  const files = new Map();
+  const errors = [];
+  let truncated = false;
+  for (const target of targets) {
+    const result = collectTemplateFiles(target.fsPath, {
+      ...options,
+      maxFiles: Math.max(1, options.maxFiles - files.size)
+    });
+    for (const file of result.files) files.set(file, vscode.Uri.file(file));
+    errors.push(...result.errors);
+    truncated = truncated || result.truncated;
+  }
+  return { files: [...files.values()], errors, truncated, extensions };
+}
+
+function describeTargets(targets) {
+  if (targets.length === 1) return path.basename(targets[0].fsPath) || targets[0].fsPath;
+  return `${targets.length} folders`;
+}
+
+async function formatFiles(files, progress, token) {
+  const summary = { formatted: 0, unchanged: 0, failed: 0, cancelled: false };
+  const step = 100 / files.length;
+  for (let i = 0; i < files.length; i++) {
+    if (token?.isCancellationRequested) {
+      summary.cancelled = true;
+      break;
+    }
+    const uri = files[i];
+    progress?.report({ increment: step, message: `${i + 1}/${files.length} — ${path.basename(uri.fsPath)}` });
+    const outcome = await formatFileInPlace(uri);
+    summary[outcome]++;
+  }
+  return summary;
+}
+
+// Returns "formatted", "unchanged", or "failed".
+async function formatFileInPlace(uri) {
+  const open = vscode.workspace.textDocuments.find(doc => doc.uri.toString() === uri.toString());
+  const options = formatterOptions(uri, editorDefaults(uri));
+
+  if (open) {
+    const original = open.getText();
+    const formatted = runFormatter(open, original, options);
+    if (formatted == null) return "failed";
+    if (formatted === original) return "unchanged";
+    const wasDirty = open.isDirty;
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(uri, new vscode.Range(open.positionAt(0), open.positionAt(original.length)), formatted);
+    if (!(await vscode.workspace.applyEdit(edit))) {
+      output?.appendLine(`[format folder] ${uri.fsPath}: the edit was rejected`);
+      return "failed";
+    }
+    // Only save what the user had already saved; unsaved work stays theirs.
+    if (!wasDirty) await open.save();
+    output?.appendLine(`[format folder] formatted ${uri.fsPath}`);
+    return "formatted";
+  }
+
+  let original;
+  try {
+    original = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString("utf8");
+  } catch (err) {
+    output?.appendLine(`[format folder] ${uri.fsPath}: ${err.message}`);
+    return "failed";
+  }
+  // A byte order mark is not part of the template and must survive untouched.
+  const bom = original.startsWith("\uFEFF");
+  const source = bom ? original.slice(1) : original;
+  const formatted = runFormatter({ uri }, source, options);
+  if (formatted == null) return "failed";
+  if (formatted === source) return "unchanged";
+  try {
+    await vscode.workspace.fs.writeFile(uri, Buffer.from(bom ? `\uFEFF${formatted}` : formatted, "utf8"));
+  } catch (err) {
+    output?.appendLine(`[format folder] ${uri.fsPath}: ${err.message}`);
+    return "failed";
+  }
+  output?.appendLine(`[format folder] formatted ${uri.fsPath}`);
+  return "formatted";
+}
+
+// Indentation settings for a file that may not be open in any editor.
+function editorDefaults(uri) {
+  const editor = vscode.workspace.getConfiguration("editor", uri);
+  return {
+    tabSize: editor.get("tabSize", 2),
+    insertSpaces: editor.get("insertSpaces", true)
+  };
+}
+
+function reportFolderResult(summary, total) {
+  const parts = [`formatted ${summary.formatted}`, `${summary.unchanged} already formatted`];
+  if (summary.failed) parts.push(`${summary.failed} failed`);
+  if (summary.cancelled) parts.push(`cancelled after ${summary.formatted + summary.unchanged + summary.failed} of ${total}`);
+  const message = `SPL: ${parts.join(", ")}.`;
+  output?.appendLine(`[format folder] ${message}`);
+  if (summary.failed) {
+    vscode.window.showWarningMessage(message, "Show Output").then(action => {
+      if (action === "Show Output") output?.show(true);
+    });
+    return;
+  }
+  vscode.window.showInformationMessage(message);
 }
 
 function startServer() {
@@ -721,4 +914,4 @@ function buildSemanticTokens(document) {
 }
 
 module.exports = { activate, deactivate };
-module.exports.__test = { formatWholeDocument, formatRange, formatterOptions };
+module.exports.__test = { formatWholeDocument, formatRange, formatterOptions, describeTargets, reportFolderResult };

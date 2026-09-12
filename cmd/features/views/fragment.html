@@ -1,31 +1,30 @@
 <!DOCTYPE html>
 <html>
-<head>
-  <title>${title}</title>
-</head>
-<body>
-  <header>
-    <h1>${title}</h1>
-    <nav>
-      <a href="/">Home</a>
-      <a href="/about">About</a>
-    </nav>
-  </header>
+	<head>
+		<title>${title}</title>
+	</head>
+	<body>
+		<header>
+			<h1>${title}</h1>
+			<nav>
+				<a href="/">Home</a> <a href="/about">About</a>
+			</nav>
+		</header>
 
-  @block("content") {
-    <main>
-      <p>Default content here.</p>
-    </main>
-  }
+		@block("content") {
+			<main>
+				<p>Default content here.</p>
+			</main>
+		}
 
-  @block("sidebar") {
-    <aside>
-      <p>Sidebar widgets</p>
-    </aside>
-  }
+		@block("sidebar") {
+			<aside>
+				<p>Sidebar widgets</p>
+			</aside>
+		}
 
-  <footer>
-    <p>&copy; 2026</p>
-  </footer>
-</body>
+		<footer>
+			<p>&copy; 2026</p>
+		</footer>
+	</body>
 </html>

@@ -1,5 +1,6 @@
 .vscode/**
 formatter/test/**
+src/test/**
 scripts/**
 **/*.map
 .gitignore

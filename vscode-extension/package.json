@@ -2,7 +2,7 @@
   "name": "oarkflow-template-vscode",
   "displayName": "Oarkflow Template",
   "description": "Language tooling and a formatter for Oarkflow SPL template files.",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "publisher": "oarkflow",
   "engines": {
     "vscode": "^1.85.0"
@@ -17,6 +17,7 @@
     "onLanguage:spl-template",
     "onLanguage:html",
     "onCommand:oarkflowTemplate.formatDocument",
+    "onCommand:oarkflowTemplate.formatFolder",
     "onCommand:oarkflowTemplate.formatSelection",
     "onCommand:oarkflowTemplate.showStatus",
     "workspaceContains:**/*.spl",
@@ -118,6 +119,28 @@
           "type": "boolean",
           "default": true,
           "description": "Re-indent the contents of <script>, <style>, and @handler blocks to match the surrounding markup. The code itself is never rewritten."
+        },
+        "oarkflowTemplate.format.excludeFolders": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "node_modules",
+            "vendor",
+            "dist",
+            "build",
+            "out",
+            "coverage",
+            "target"
+          ],
+          "description": "Folder names skipped by SPL: Format Folder. Hidden folders (names starting with a dot) are always skipped."
+        },
+        "oarkflowTemplate.format.maxFilesPerRun": {
+          "type": "number",
+          "default": 2000,
+          "minimum": 1,
+          "description": "Maximum number of files SPL: Format Folder will rewrite in a single run."
         }
       }
     },
@@ -130,6 +153,11 @@
       {
         "command": "oarkflowTemplate.formatSelection",
         "title": "Format Selection",
+        "category": "SPL"
+      },
+      {
+        "command": "oarkflowTemplate.formatFolder",
+        "title": "Format Folder",
         "category": "SPL"
       },
       {
@@ -150,6 +178,13 @@
           "when": "(resourceExtname == .spl || resourceExtname == .tmpl || editorLangId == spl-template || editorLangId == html) && editorHasSelection",
           "group": "1_modification@100"
         }
+      ],
+      "explorer/context": [
+        {
+          "command": "oarkflowTemplate.formatFolder",
+          "when": "explorerResourceIsFolder",
+          "group": "7_modification@100"
+        }
       ]
     },
     "keybindings": [
@@ -162,8 +197,8 @@
     ]
   },
   "scripts": {
-    "check": "node --check src/extension.js && node --check server/server.js",
-    "test": "node --test \"formatter/test/*.test.js\"",
+    "check": "node --check src/extension.js && node --check src/collect.js && node --check server/server.js",
+    "test": "node --test \"formatter/test/*.test.js\" \"src/test/*.test.js\"",
     "verify:go": "node scripts/verify-go.js"
   }
 }

@@ -260,3 +260,94 @@ test("keeps a directive glued to an attribute name as one unit", () => {
     '<form action="/x" novalidate @if(req) { data-required="true"}>\n  <p>a</p>\n</form>\n'
   );
 });
+
+/* ------------------------------------------- directive argument lists */
+
+test("indents a multi-line @render argument object under the directive", () => {
+  assertFormat(
+    '<div>\n@render("Panel", {\n"id": x,\n"label": st.label\n})\n</div>\n',
+    '<div>\n  @render("Panel", {\n    "id": x,\n    "label": st.label\n  })\n</div>\n'
+  );
+});
+
+test("re-indents directive arguments when the directive itself moves", () => {
+  assertFormat(
+    '@if(a) {\n@if(b) {\n@render("P", {\n  "x": 1\n})\n}\n}\n',
+    '@if(a) {\n  @if(b) {\n    @render("P", {\n      "x": 1\n    })\n  }\n}\n'
+  );
+});
+
+test("leaves single-line argument lists exactly as written", () => {
+  const src = '<div>@render("P", {"a": 1, "b": 2})</div>\n';
+  assert.strictEqual(fmt(src), src);
+});
+
+test("keeps a trailing comma in a multi-line argument object", () => {
+  assertFormat(
+    '@render("P", {\n"a": 1,\n"b": 2,\n})\n',
+    '@render("P", {\n  "a": 1,\n  "b": 2,\n})\n'
+  );
+});
+
+test("expands nested literals that were written across lines", () => {
+  assertFormat(
+    '@render("P", {\n"a": { "x": 1 },\n"list": [\n1,\n2\n]\n})\n',
+    '@render("P", {\n  "a": { "x": 1 },\n  "list": [\n    1,\n    2\n  ]\n})\n'
+  );
+});
+
+test("breaks a multi-line argument list that has no trailing literal", () => {
+  assertFormat(
+    '@include(\n"a/b.spl",\n"c"\n)\n',
+    '@include(\n  "a/b.spl",\n  "c"\n)\n'
+  );
+});
+
+test("formats a block directive head the same way as an inline one", () => {
+  assertFormat(
+    '<div>\n@component("Card", {\n"title": t\n}) {\n<p>x</p>\n}\n</div>\n',
+    '<div>\n  @component("Card", {\n    "title": t\n  }) {\n    <p>x</p>\n  }\n</div>\n'
+  );
+});
+
+test("re-anchors an inline @handler body without restructuring it", () => {
+  assertFormat(
+    '<div>\n@handler(save = {\nfetch("/x"); // go\n})\n</div>\n',
+    '<div>\n  @handler(save = {\n    fetch("/x"); // go\n  })\n</div>\n'
+  );
+});
+
+test("keeps a wrapped condition on the author's own lines", () => {
+  assertFormat(
+    "@if(a &&\nb) {\n<p>x</p>\n}\n",
+    "@if(a &&\n  b) {\n  <p>x</p>\n}\n"
+  );
+});
+
+test("never re-indents inside a template literal argument", () => {
+  const out = fmt('<div>\n@render("P", {\n"t": `a\nb`\n})\n</div>\n');
+  assert.ok(out.includes("`a\nb`"), out);
+});
+
+/* ------------------------------------------------ whitespaceSensitivity */
+
+test("keeps back-to-back tags glued when whitespace is significant", () => {
+  assertFormat(
+    '<div>\n<input name="a"><input name="b">\n</div>\n',
+    '<div>\n  <input name="a"><input name="b">\n</div>\n'
+  );
+});
+
+test("splits back-to-back tags when whitespace sensitivity is ignored", () => {
+  const long = '<input name="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"><input name="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb">';
+  const out = fmt(`<div>\n${long}\n</div>\n`, { whitespaceSensitivity: "ignore", printWidth: 60 });
+  assert.strictEqual(
+    out,
+    '<div>\n  <input name="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa">\n  <input name="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb">\n</div>\n'
+  );
+});
+
+test("never splits text that has no whitespace, even when ignoring whitespace", () => {
+  const src = "<p>${a}${b}</p>\n";
+  assert.strictEqual(fmt(src, { whitespaceSensitivity: "ignore" }), src);
+});

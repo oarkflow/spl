@@ -421,7 +421,7 @@ function tryParseDirective(ctx, stack, flushText) {
   if (!hasBody) {
     if (data.REQUIRES_PARENS.has(keyword) && !head.hasParens) return null;
     ctx.pos = head.end;
-    return { type: "inlineDirective", kind: keyword, raw: head.text };
+    return { type: "inlineDirective", kind: keyword, raw: head.text, args: head.collapsed };
   }
 
   const node = { type: "directive", kind: keyword, branches: [], startOffset: start };
@@ -438,6 +438,7 @@ function tryParseDirective(ctx, stack, flushText) {
       const end = closed ? close - 1 : src.length;
       node.branches.push({
         head: currentHead.text,
+        args: currentHead.collapsed,
         verbatim: src.slice(at + 1, Math.max(end, at + 1)),
         kind: currentKind,
         closed,
@@ -448,6 +449,7 @@ function tryParseDirective(ctx, stack, flushText) {
       const children = parseNodes(ctx, true);
       node.branches.push({
         head: currentHead.text,
+        args: currentHead.collapsed,
         kind: currentKind,
         children,
         closed: ctx.blockClosed
@@ -495,10 +497,11 @@ function readDirectiveHead(ctx, at) {
   } else if (data.REQUIRES_PARENS.has(keyword)) {
     return null;
   }
-  const text = args === null ? `@${keyword}` : `@${keyword}(${collapseArgs(args)})`;
+  const collapsed = args === null ? null : collapseArgs(args);
+  const text = collapsed === null ? `@${keyword}` : `@${keyword}(${collapsed})`;
   // `@handler(name = expr)` has no block body; `@handler(name) { ... }` does.
   const inlineHandler = keyword === "handler" && args !== null && hasTopLevelAssign(args);
-  return { keyword, args, text, end: i, hasParens: args !== null, inlineHandler };
+  return { keyword, args, collapsed, text, end: i, hasParens: args !== null, inlineHandler };
 }
 
 function collapseArgs(args) {

@@ -1,6 +1,7 @@
 "use strict";
 
 const data = require("./language-data");
+const { printDirectiveHead } = require("./args");
 const {
   concat, group, fill, indent, join,
   line, softline, hardline, literalline
@@ -147,6 +148,10 @@ function separator(prev, next, ws, ctx) {
   // unless the user asked for strict whitespace handling.
   if (ctx.whitespaceSensitivity === "strict") return "";
   if (isBlockLevel(prev) && isBlockLevel(next)) return hardline;
+  // `ignore` means whitespace may be invented, so two tags written back to back
+  // -- `<input ...><input ...>` -- can still be split when the line overflows.
+  // Only tag boundaries qualify: breaking inside text would move real content.
+  if (ctx.whitespaceSensitivity === "ignore" && prev.type === "element" && next.type === "element") return softline;
   return "";
 }
 
@@ -310,7 +315,8 @@ function printDirective(node, ctx) {
   const parts = [];
 
   node.branches.forEach((branch, i) => {
-    parts.push(i === 0 ? `${branch.head} {` : `} ${branch.head} {`);
+    const head = printDirectiveHead(branch.kind, branch.args, branch.head);
+    parts.push(i === 0 ? concat([head, " {"]) : concat(["} ", head, " {"]));
     if (branch.verbatim != null) {
       // @raw keeps its body byte for byte; @handler holds JavaScript we may re-anchor.
       if (branch.kind === "handler" && ctx.indentEmbeddedCode) {
@@ -360,7 +366,7 @@ function printNode(node, ctx) {
     case "splComment":
       return node.raw;
     case "inlineDirective":
-      return node.raw;
+      return printDirectiveHead(node.kind, node.args, node.raw);
     case "directive":
       return printDirective(node, ctx);
     case "element":
